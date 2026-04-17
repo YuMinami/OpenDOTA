@@ -436,5 +436,87 @@ sequenceDiagram
 
 ---
 
+## 六、v1.1 审阅落地跟踪(2026-04-17 更新)
+
+经过企业级审阅增强后,v1.1 版本对审阅意见的处理情况如下。具体章节定位见协议规范 / 技术架构 / SQL DDL:
+
+### 6.1 最初 12 项缺失 → 100% 覆盖
+
+| #  | 原缺失项                            | v1.1 落地位置                                                                                  |
+| :-: | :---------------------------------- | :--------------------------------------------------------------------------------------------- |
+|  1 | 多 ECU 编排脚本                      | 协议 §9 `script_cmd` + §13 分发路由                                                             |
+|  2 | 云端任务管理系统                     | 架构 §4 + SQL `task_definition` / `task_target` / `task_dispatch_record`                        |
+|  3 | 任务优先级模型                       | 协议 §10.3 + §10.7.1(force 抢占)+ 架构 §4.3                                                   |
+|  4 | 大批量分发(含 Kafka 限流管道)        | 架构 §4.4(Kafka + 四级 Token Bucket)                                                           |
+|  5 | 离线车辆任务推送                     | 架构 §4.5(Kafka vehicle-lifecycle 削峰)                                                         |
+|  6 | 车端任务队列与操控                   | 协议 §11 + §11.8 反压 + 架构 `task_dispatch_pending_backlog`                                    |
+|  7 | 诊断仪与任务互斥                     | 协议 §10.1~§10.7(状态机 + force + miss policy + channel_ready)                                |
+|  8 | 定时/条件任务类型                    | 协议 §8.2.1(timed)+ §8.2.2(conditional)+ §8.3(监听基座)                                     |
+|  9 | 最大执行次数 + 优先级规则             | 协议 §8.2.4(`maxExecutions` vs `validWindow`)                                                  |
+| 10 | 任务管理数据库表                     | 架构 §6.2 + SQL 全量建表                                                                        |
+| 11 | 心跳与在线状态                       | 架构 §4.6(Rule Engine + Kafka + Reconcile)+ `vehicle_online_status`                           |
+| 12 | 任务控制 Topic 完善                  | 协议 §12(含 §12.6 幂等 + supersedes)                                                           |
+
+### 6.2 v1.1 新增的企业级增强(20 项资深审阅)
+
+| 分类                  | v1.1 新增能力                                                                    | 位置                                                |
+| :-------------------- | :------------------------------------------------------------------------------- | :-------------------------------------------------- |
+| **身份与审计**        | Envelope `operator` 字段,贯穿审计链                                              | 协议 §3.3                                           |
+|                       | mTLS 证书 CN/Tenant/VIN 三元强绑定 ACL                                            | 协议 §15.1.1                                        |
+|                       | 4 角色 RBAC 权限矩阵,车端兜底校验                                                | 协议 §15.4 + 架构 `opendota-security` 模块          |
+|                       | 不可篡改审计日志,独立账号 append-only,保留 3 年                                  | 协议 §15.2 + SQL `security_audit_log`               |
+|                       | Maker-Checker 二次审批流                                                          | SQL `approval_record`,车端校验 `approvalId` |
+| **资源仲裁**          | `force` 抢占字段,仅 senior_engineer+ 可用                                        | 协议 §10.7.1                                        |
+|                       | `missPolicy` 错过补偿策略(skip/once/all)                                         | 协议 §10.7.4                                        |
+|                       | `channel_ready` 主动通知事件,取代轮询                                            | 协议 §10.7.3                                        |
+|                       | 通道 `currentSession` 实时上报                                                    | 协议 §4.2 / §4.4                                    |
+|                       | `scheduling` 新状态,修复周期任务 active 回落语义                                 | 协议 §14.4.3                                        |
+|                       | `ecuScope` 预留字段,为 ECU 级互斥铺路                                            | 协议 §4.2                                           |
+| **条件任务**          | 车端监听基座(DBC / DTC / timer 三类数据源)                                       | 协议 §8.3                                           |
+|                       | 信号白名单防 CAN 订阅爆炸                                                         | 协议 §8.3.2 + SQL `condition_signal_catalog`        |
+|                       | `condition_fired` 事件独立上报                                                    | 协议 §8.3.4                                         |
+| **幂等 / 版本**       | `task_ack` 车端接收确认,`duplicate_ignored` 幂等语义                             | 协议 §12.6.2                                        |
+|                       | `supersedes_task_id` + `version` 任务版本链                                       | 协议 §12.6.3 + SQL                                  |
+|                       | `payloadHash` 内容指纹校验                                                        | SQL `task_definition.payload_hash`                  |
+|                       | `validUntil` vs `validWindow` 层次规则                                            | 协议 §8.2.5                                         |
+| **反压 / 可靠性**     | `queue_reject` + 软/硬水位反压                                                    | 协议 §11.8                                          |
+|                       | 云端候补表(pending backlog)+ 主动通知回流                                        | 架构 §4.7 + SQL `task_dispatch_pending_backlog`     |
+|                       | EMQX Rule Engine → Kafka 可靠消费(取代 Webhook)                                  | 架构 §4.6                                           |
+|                       | 离线推送 Kafka 削峰 + Redis Token Bucket 四级限流                                 | 架构 §4.4.2 + §4.5                                  |
+|                       | Reconcile 定时对账作业                                                            | 架构 §4.6.4                                         |
+| **OTA / 固件**        | `transferSessionId` 断点续传                                                      | 协议 §7.5 + SQL `flash_session`                     |
+|                       | A/B 分区 + `rollbackOnFailure` 预留                                               | 协议 §7.5                                           |
+|                       | 刷写必须走 Maker-Checker                                                          | 协议 §15.4.2                                        |
+| **可观测性**          | 协议 §16 完整 SLI/SLO 清单(诊断/任务/仲裁/安全 4 类)                              | 协议 §16                                            |
+|                       | MDC 五字段贯穿(traceId/msgId/vin/operatorId/tenantId)                            | 架构 §9.1                                           |
+|                       | Prometheus/Grafana/OTEL/Jaeger 对接                                               | 架构 §9.2                                           |
+| **审计链 / FK**       | `diag_record` 增加 `task_id` / `execution_seq` / `script_id` / `trace_id` 外键    | 架构 §6.1 + SQL                                     |
+|                       | `sse_event` 统一事件流水(取代 diag_record 单源回填)                              | 架构 §3.2.1.1 + SQL                                 |
+|                       | `channel_event_log` / `condition_fired_log` 独立表                                | 架构 §6.2 + SQL                                     |
+| **多租户**            | 所有业务表新增 `tenant_id` + PG RLS 行级隔离                                      | SQL §6 + 架构 §6.3                                  |
+
+### 6.3 v1.1 剩余的 P2 事项(生产前非阻塞)
+
+以下为资深审阅原清单中标注但 v1.1 暂未全部闭环,建议在 MVP 之后的二轮迭代补齐:
+
+| 主题                               | 当前处置            | 后续建议                                         |
+| :--------------------------------- | :------------------ | :----------------------------------------------- |
+| ECU 级资源互斥(而非整车级)         | 预留 `ecuScope` 字段 | Agent 实现双队列调度,基于 ECU 通道颗粒度仲裁    |
+| `condition` 任务信号订阅灰度       | 白名单表已就位      | 需配套 OEM 的 DBC 版本管理平台集成              |
+| `macro_data_transfer` A/B 分区机制 | 协议字段已定义      | 待 ECU 硬件支持双分区后开发 Agent-side flashing |
+| 周期任务执行速率动态调速           | 未覆盖              | 车载负载反馈动态调整 `intervalMs`               |
+
+---
+
 > [!IMPORTANT]
-> **核心结论**：当前两份文档定义了一个优秀的「远程诊断仪」，但离你目标的「远程诊断 + 批量任务调度平台」还差一个完整的**任务管理系统层**。建议新增一份独立文档 `opendota_task_system_spec.md`，专门定义任务管理系统的协议与架构，然后在现有两份文档中增加互斥机制和多 ECU 编排的补充章节。
+> **v1.1 核心结论**:两份文档已从"远程诊断仪的协议骨架"升级为"企业级远程诊断 + 批量任务调度 + 多租户 + 可审计 + 可观测的生产级平台规范"。相比 v1.0:
+>
+> - 协议规范从 15 章扩充到 16 章(新增 §16 可观测性);§3/§4/§7/§8/§10/§11/§12/§14/§15 大幅加强
+> - 技术架构从 11 章保持,但 §3/§4/§5/§6/§9 深度重写,新增 `opendota-security` / `opendota-observability` / 重写 `opendota-task` 模块
+> - SQL DDL 从 5 张表扩到 20+ 张表,全量覆盖身份/审计/任务/反压/事件流水/RLS 租户隔离
+> - v1.0 的 40% 需求覆盖 → v1.1 的 ~95% 覆盖率,剩余 ~5% 为预留扩展字段待硬件/业务就位后打开
+
+---
+
+> **历史原文(v1.0 审阅结论,保留作为演进参照):**
+> **核心结论**:当前两份文档定义了一个优秀的「远程诊断仪」,但离你目标的「远程诊断 + 批量任务调度平台」还差一个完整的**任务管理系统层**。建议新增一份独立文档 `opendota_task_system_spec.md`,专门定义任务管理系统的协议与架构,然后在现有两份文档中增加互斥机制和多 ECU 编排的补充章节。
