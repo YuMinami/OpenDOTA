@@ -12,13 +12,14 @@
 1. [技术选型总览](#1-技术选型总览)
 2. [系统架构设计](#2-系统架构设计)
 3. [核心异步通信架构](#3-核心异步通信架构)
-4. [后端工程结构设计](#4-后端工程结构设计)
-5. [数据库设计](#5-数据库设计)
-6. [前端工程设计](#6-前端工程设计)
-7. [车端模拟器](#7-车端模拟器)
-8. [日志与可观测性](#8-日志与可观测性)
-9. [MVP 开发路线图](#9-mvp-开发路线图)
-10. [开发规约与约定](#10-开发规约与约定)
+4. [云端任务管理系统](#4-云端任务管理系统)
+5. [后端工程结构设计](#5-后端工程结构设计)
+6. [数据库设计](#6-数据库设计)
+7. [前端工程设计](#7-前端工程设计)
+8. [车端模拟器](#8-车端模拟器)
+9. [日志与可观测性](#9-日志与可观测性)
+10. [MVP 开发路线图](#10-mvp-开发路线图)
+11. [开发规约与约定](#11-开发规约与约定)
 
 ---
 
@@ -73,12 +74,15 @@ graph TB
     subgraph 云端 Spring Boot 集群
         API[REST API Controller]
         DISPATCHER[Diag Dispatcher 分发路由]
+        TASK_MGR[任务管理系统 Task Manager]
+        TASK_DISP[任务分发调度器 Task Dispatcher]
         MQTT_PUB[MQTT Publisher 发布者]
         MQTT_SUB[MQTT Subscriber 监听者]
         ODX_ENGINE[ODX 编解码引擎]
         SSE_SERVER[SSE Emitter 管理器]
         REDIS_PUB[Redis Publisher]
         REDIS_SUB[Redis Subscriber]
+        ONLINE_SVC[车辆在线状态服务]
     end
 
     subgraph 中间件
@@ -89,10 +93,14 @@ graph TB
 
     subgraph 车端
         AGENT[车端 Agent / 模拟器]
+        TRANSPORT["传输协议栈<br/>ISO-TP (CAN) / DoIP (ETH)"]
     end
 
     UI -->|HTTP POST 下发指令| API
     API --> ODX_ENGINE
+    API --> TASK_MGR
+    TASK_MGR --> TASK_DISP
+    TASK_DISP --> MQTT_PUB
     ODX_ENGINE --> DISPATCHER
     DISPATCHER --> MQTT_PUB
     MQTT_PUB -->|Publish C2V| EMQX
@@ -100,6 +108,9 @@ graph TB
 
     AGENT -->|Publish V2C| EMQX
     EMQX -->|Subscribe V2C| MQTT_SUB
+    EMQX -->|Webhook: client.connected/disconnected| ONLINE_SVC
+    ONLINE_SVC -->|更新在线状态| PG
+    ONLINE_SVC -->|触发待推送任务| TASK_DISP
     MQTT_SUB --> ODX_ENGINE
     ODX_ENGINE -->|翻译结果| REDIS_PUB
     REDIS_PUB -->|Pub Channel| REDIS
@@ -110,6 +121,7 @@ graph TB
     API -->|查询服务目录| PG
     ODX_ENGINE -->|读取编解码规则| PG
     MQTT_SUB -->|持久化诊断记录| PG
+    TASK_MGR -->|读写任务定义/分发记录| PG
 ```
 
 ### 2.2 核心设计原则
@@ -164,18 +176,96 @@ sequenceDiagram
 | `dota:resp:batch:{vin}` | 批量任务结果广播 | 批量任务汇总结果 JSON |
 | `dota:event:channel:{vin}` | 诊断通道状态变更 | 通道开启/关闭/超时事件 |
 
+#### 3.2.1 Pub/Sub 广播丢失风险与缓解策略
+
+> [!WARNING]
+> Redis Pub/Sub 是**纯广播模型**——消息不持久化，不为离线订阅者缓存。如果用户的 SSE 连接断开了 10 秒后重连，这 10 秒内通过 Redis Channel 广播的诊断结果会**永久丢失**，用户将看不到这些结果。
+
+**MVP 阶段缓解方案：基于 PG `diag_record` 的断线补发**
+
+由于每条诊断结果在 MQTT 回调时已经持久化到 `diag_record` 表（含 `responded_at` 时间戳），可利用这张表作为**兜底数据源**实现断线补发：
+
+1. **SSE 推送时携带事件 ID**：后端每次通过 SSE 推送结果时，在 `id` 字段中设置 `diag_record.id`（数据库自增主键）作为事件游标。
+2. **前端重连时发送 `Last-Event-ID`**：浏览器原生 `EventSource` 在重连时会自动将最后一次收到的事件 ID 通过 `Last-Event-ID` 请求头发送给服务端。
+3. **后端补发断线期间的记录**：SSE 重连 Handler 读取 `Last-Event-ID`，从 `diag_record` 表中查询 `id > lastEventId AND vin = ?` 的所有记录，按序补发给前端。
+
+```mermaid
+sequenceDiagram
+    participant React as React 前端
+    participant SSE as SSE Emitter
+    participant PG as PostgreSQL
+    participant Redis as Redis Channel
+
+    Note over React,SSE: 正常状态：SSE 连接存活
+    Redis->>SSE: 广播诊断结果 (id=100)
+    SSE->>React: SSE Push (id:100, data:{...})
+
+    Note over React,SSE: ❌ 网络断开 10 秒
+    Redis->>SSE: 广播诊断结果 (id=101) → SSE 连接已断，丢失
+    Redis->>SSE: 广播诊断结果 (id=102) → SSE 连接已断，丢失
+
+    Note over React,SSE: ✅ SSE 重连
+    React->>SSE: GET /api/sse/subscribe/{vin} (Last-Event-ID: 100)
+    SSE->>PG: SELECT * FROM diag_record WHERE id > 100 AND vin = ?
+    PG-->>SSE: 返回 id=101, id=102 两条记录
+    SSE->>React: SSE Push 补发 (id:101, data:{...})
+    SSE->>React: SSE Push 补发 (id:102, data:{...})
+    Note over React: 断线期间的结果已恢复
+```
+
+**后端实现要点**：
+
+```java
+@GetMapping(value = "/api/sse/subscribe/{vin}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+public SseEmitter subscribe(
+        @PathVariable String vin,
+        @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId) {
+
+    SseEmitter emitter = new SseEmitter(0L);
+    sseEmitterManager.register(vin, emitter);
+
+    // 如果是断线重连，补发断线期间的记录
+    if (lastEventId != null && !lastEventId.isBlank()) {
+        long lastId = Long.parseLong(lastEventId);
+        List<DiagRecord> missed = diagRecordRepository
+            .findByVinAndIdGreaterThanOrderByIdAsc(vin, lastId);
+        for (DiagRecord record : missed) {
+            emitter.send(SseEmitter.event()
+                .id(String.valueOf(record.getId()))
+                .name("diag-result")
+                .data(record.getTranslated()));
+        }
+    }
+
+    emitter.onCompletion(() -> sseEmitterManager.remove(vin, emitter));
+    emitter.onTimeout(() -> sseEmitterManager.remove(vin, emitter));
+    return emitter;
+}
+```
+
+> [!TIP]
+> **演进路线**：当系统规模增长到需要支撑高并发、多消费者组时，可从 Redis Pub/Sub 迁移到 **Redis Stream**（`XADD` / `XREAD` / `XACK`），Redis Stream 原生支持消息持久化、消费者组和断点续读，无需再依赖 PG 回填。但 MVP 阶段 PG 回填方案已足够可靠，且零额外组件引入。
+
 ### 3.3 SSE (Server-Sent Events) 设计
 
 > [!TIP]
 > 选择 SSE 而非 WebSocket 的原因：本场景为典型的**单向推送**（Server → Client），SSE 直接复用 HTTP 协议，无需心跳保活，React 端用原生 `EventSource` 几行代码即可接入，开发维护成本远低于 WebSocket。
 
-**Spring Boot 端**：
+**Spring Boot 端**（基础版本，断线补发逻辑见 3.2.1 节）：
 
 ```java
 @GetMapping(value = "/api/sse/subscribe/{vin}", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-public SseEmitter subscribe(@PathVariable String vin) {
+public SseEmitter subscribe(
+        @PathVariable String vin,
+        @RequestHeader(value = "Last-Event-ID", required = false) String lastEventId) {
     SseEmitter emitter = new SseEmitter(0L); // 永不超时，靠前端重连
     sseEmitterManager.register(vin, emitter);
+
+    // 断线重连补发逻辑（详见 3.2.1 节）
+    if (lastEventId != null) {
+        sseEmitterManager.replayMissedEvents(vin, lastEventId, emitter);
+    }
+
     emitter.onCompletion(() -> sseEmitterManager.remove(vin, emitter));
     emitter.onTimeout(() -> sseEmitterManager.remove(vin, emitter));
     return emitter;
@@ -206,9 +296,261 @@ useEffect(() => {
 
 ---
 
-## 4. 后端工程结构设计
+## 4. 云端任务管理系统
 
-### 4.1 Maven 多模块结构
+> [!IMPORTANT]
+> 云端任务管理系统是「远程诊断 + 批量任务调度平台」的核心上层管理能力。协议层（第 8-12 章）定义了车云之间的通讯报文格式，本章定义**云端侧**的任务编排、分发、追踪和在线状态管理的技术架构。
+
+### 4.1 系统架构概览
+
+```mermaid
+graph TB
+    subgraph 云端任务管理系统
+        TD[任务定义 Task Definition]
+        TP[目标车辆匹配 Target Resolver]
+        DISP[分发调度器 Task Dispatcher]
+        TRACKER[状态追踪器 Status Tracker]
+        ONLINE[在线状态服务 Online Service]
+    end
+
+    subgraph 外部依赖
+        PG[(PostgreSQL)]
+        EMQX[EMQX Broker]
+        WEBHOOK[EMQX Webhook]
+    end
+
+    TD -->|创建任务| TP
+    TP -->|解析目标 VIN 列表| DISP
+    DISP -->|查询在线状态| ONLINE
+    DISP -->|在线车辆: 立即下发| EMQX
+    DISP -->|离线车辆: 标记 pending_online| PG
+    WEBHOOK -->|client.connected| ONLINE
+    ONLINE -->|车辆上线: 查询待推送任务| PG
+    ONLINE -->|触发下发| DISP
+    EMQX -->|V2C 执行结果| TRACKER
+    TRACKER -->|更新分发状态| PG
+```
+
+### 4.2 核心数据模型
+
+#### Task（任务定义）
+
+| 字段 | 说明 |
+|:---|:---|
+| `taskId` | 全局唯一标识 |
+| `taskName` | 任务名称 |
+| `priority` | 优先级 (0=最高, 9=最低) |
+| `validFrom` / `validUntil` | 任务有效期 |
+| `targetScope` | 目标范围（VIN 列表 / 车型 / 标签 / 全量） |
+| `scheduleType` | 调度类型（once / periodic / timed / conditional） |
+| `scheduleConfig` | 调度配置 JSON |
+| `payloadType` | 诊断载荷类型（batch / script） |
+| `diagPayload` | 诊断执行内容（`batch_cmd` 或 `script_cmd` 的 payload） |
+| `status` | 任务状态（draft / active / paused / completed / expired） |
+| `createdBy` | 创建人 |
+
+#### TaskDispatchRecord（分发记录）
+
+| 字段 | 说明 |
+|:---|:---|
+| `taskId` | 关联任务 ID |
+| `vin` | 目标车辆 |
+| `dispatchStatus` | 分发状态（pending_online / dispatched / ack / executing / completed / failed） |
+| `dispatchedAt` | 实际下发时间 |
+| `completedAt` | 完成时间 |
+| `resultPayload` | 执行结果 JSON |
+
+### 4.3 任务优先级模型
+
+| 优先级 | 值 | 说明 |
+|:---|:---:|:---|
+| **在线诊断仪** | 0 | 最高优先级，人工实时操作（隐含，非任务系统管理） |
+| 紧急任务 | 1-2 | 紧急召回检测、安全相关自检 |
+| 普通任务 | 3-5 | 常规远程诊断、批量 DTC 读取 |
+| 低优先级任务 | 6-9 | 数据采集、统计类任务 |
+
+**优先级执行规则**：
+- 车端任务队列按 `priority` 值升序排列（数值越小越优先）。
+- 相同优先级按入队时间排序（FIFO）。
+- 高优先级任务到达时**不中断**正在执行的低优先级任务（原因见[协议规范第 10.3 节](./opendota_protocol_spec.md#103-冲突裁决规则)）。
+- 在线诊断仪受特殊互斥规则约束（详见[协议规范第 10 章](./opendota_protocol_spec.md#10-车端资源仲裁与互斥机制-resource-arbitration)）。
+
+### 4.4 大批量车辆分发机制
+
+#### 4.4.1 分发流程
+
+```mermaid
+sequenceDiagram
+    participant OP as 操作员
+    participant API as 任务管理 API
+    participant DISP as 分发调度器
+    participant PG as PostgreSQL
+    participant EMQX as EMQX Broker
+    participant VEHICLE as 车端 Agent
+
+    OP->>API: 创建任务 (targetScope: 车型=EQ7)
+    API->>PG: 写入 task_definition
+    API->>PG: 解析目标车型 → 匹配 VIN 列表
+    API->>PG: 批量写入 task_dispatch_record (每辆车一条)
+
+    API->>DISP: 触发分发
+    DISP->>PG: 查询在线车辆 (vehicle_online_status.is_online=true)
+
+    loop 在线车辆 (限流: 100辆/秒)
+        DISP->>EMQX: MQTT Publish → dota/v1/cmd/schedule/{vin}
+        DISP->>PG: 更新 dispatch_status = dispatched
+    end
+
+    Note over DISP: 离线车辆保持 dispatch_status = pending_online
+
+    EMQX->>VEHICLE: 投递任务
+    VEHICLE->>EMQX: ACK + 执行结果
+    EMQX->>DISP: 回调处理结果
+    DISP->>PG: 更新 dispatch_status = completed
+```
+
+#### 4.4.2 流量控制策略
+
+| 策略 | 配置 | 说明 |
+|:---|:---|:---|
+| **分批限流** | 100 辆/秒 | 避免 MQTT Broker 瞬时过载 |
+| **分时段下发** | 可配置时间窗口 | 如仅在 02:00-06:00 低峰时段下发 |
+| **优先级排序** | 按 task.priority 排序 | 高优先级任务优先分发 |
+| **失败重试** | 最多 3 次，指数退避 | 下发失败后自动重试 |
+
+### 4.5 离线车辆任务推送机制
+
+```mermaid
+sequenceDiagram
+    participant CLOUD as 云端
+    participant BROKER as MQTT Broker
+    participant VEHICLE as 车端 Agent
+
+    Note over CLOUD,VEHICLE: 场景：车辆处于离线状态
+    CLOUD->>CLOUD: 创建任务，目标含 VIN-001
+    CLOUD->>CLOUD: 检测 VIN-001 离线，标记 dispatchStatus=pending_online
+
+    Note over CLOUD,VEHICLE: 车辆上线
+    VEHICLE->>BROKER: MQTT CONNECT
+    BROKER->>CLOUD: EMQX Webhook → client.connected (VIN-001)
+    CLOUD->>CLOUD: 查询 pending_online 任务队列
+    CLOUD->>CLOUD: 过滤已过期任务 (validUntil < now)
+    CLOUD->>BROKER: 逐个下发待推送任务（按优先级排序）
+    BROKER->>VEHICLE: 投递任务
+    VEHICLE->>CLOUD: ACK + 执行结果
+```
+
+**关键设计点**：
+- 利用 EMQX 的 `client.connected` Webhook 感知车辆上线。
+- 云端维护 `pending_online` 队列，上线后按优先级逐个推送。
+- 下发前检查任务有效期：`validUntil < now()` 的任务不再下发，标记为 `expired`。
+
+### 4.6 心跳与在线状态管理
+
+> [!IMPORTANT]
+> 批量下发和离线推送严重依赖「知道哪些车在线」。系统通过 EMQX Webhook + MQTT Last Will 双重机制维护车辆实时在线状态。
+
+#### 4.6.1 在线状态维护方案
+
+```mermaid
+sequenceDiagram
+    participant VEHICLE as 车端 Agent
+    participant EMQX as EMQX Broker
+    participant WEBHOOK as Webhook Handler
+    participant PG as PostgreSQL
+
+    Note over VEHICLE,EMQX: 车辆上线
+    VEHICLE->>EMQX: MQTT CONNECT (with Last Will Topic)
+    EMQX->>WEBHOOK: POST /webhook/client.connected {clientId, username(=VIN)}
+    WEBHOOK->>PG: UPDATE vehicle_online_status SET is_online=true, last_online_at=now()
+    WEBHOOK->>WEBHOOK: 触发 pending_online 任务推送
+
+    Note over VEHICLE,EMQX: 正常在线
+    loop 平台级心跳 (每 60 秒)
+        VEHICLE->>EMQX: MQTT PINGREQ
+        EMQX-->>VEHICLE: MQTT PINGRESP
+    end
+
+    Note over VEHICLE,EMQX: 车辆离线 (异常断连)
+    VEHICLE-xEMQX: TCP 断开
+    EMQX->>EMQX: 检测到 Keep Alive 超时
+    EMQX->>WEBHOOK: POST /webhook/client.disconnected {clientId, username(=VIN)}
+    WEBHOOK->>PG: UPDATE vehicle_online_status SET is_online=false, last_offline_at=now()
+```
+
+#### 4.6.2 EMQX Webhook 配置
+
+```yaml
+# EMQX Dashboard → Rule Engine → Webhook
+# 或 emqx.conf 配置
+
+webhook.url = "http://opendota-server:8080/api/webhook/emqx"
+webhook.events = ["client.connected", "client.disconnected"]
+webhook.headers = { "Authorization": "Bearer ${WEBHOOK_TOKEN}" }
+```
+
+#### 4.6.3 后端 Webhook Handler
+
+```java
+/**
+ * EMQX Webhook 回调处理器
+ * 接收 EMQX 的 client.connected / client.disconnected 事件
+ * 维护车辆在线状态，触发离线任务推送
+ */
+@RestController
+@RequestMapping("/api/webhook/emqx")
+public class EmqxWebhookController {
+
+    @PostMapping
+    public ResponseEntity<Void> handleWebhook(@RequestBody EmqxWebhookEvent event) {
+        String vin = event.getUsername(); // MQTT 用户名即为 VIN
+
+        if ("client.connected".equals(event.getEvent())) {
+            vehicleOnlineService.markOnline(vin, event.getClientId());
+            // 异步触发：查询并下发 pending_online 的任务
+            taskDispatchService.dispatchPendingTasks(vin);
+        } else if ("client.disconnected".equals(event.getEvent())) {
+            vehicleOnlineService.markOffline(vin);
+        }
+
+        return ResponseEntity.ok().build();
+    }
+}
+```
+
+### 4.7 任务状态聚合看板
+
+任务管理系统需提供任务维度的执行进度看板 API：
+
+| API | 说明 |
+|:---|:---|
+| `GET /api/task/{taskId}/progress` | 单个任务的分发进度聚合 |
+| `GET /api/task/list` | 任务列表（分页、筛选） |
+
+**进度聚合响应示例**：
+
+```json
+{
+  "taskId": "task-dtc-scan-001",
+  "taskName": "全车型 DTC 扫描",
+  "totalTargets": 5000,
+  "progress": {
+    "pending_online": 1200,
+    "dispatched": 800,
+    "executing": 150,
+    "completed": 2700,
+    "failed": 50,
+    "expired": 100
+  },
+  "completionRate": "54.0%"
+}
+```
+
+---
+
+## 5. 后端工程结构设计
+
+### 5.1 Maven 多模块结构
 
 ```
 opendota-server/
@@ -258,6 +600,7 @@ opendota-server/
 │           ├── controller/
 │           │   ├── SingleDiagController.java  # 单步诊断 API
 │           │   ├── BatchDiagController.java   # 批量诊断 API
+│           │   ├── ScriptDiagController.java  # 多 ECU 编排脚本 API
 │           │   ├── ScheduleController.java    # 定时任务 API
 │           │   └── SseController.java         # SSE 订阅端点
 │           ├── service/
@@ -266,6 +609,24 @@ opendota-server/
 │           │   └── TaskManager.java           # 批量/定时任务状态管理
 │           └── sse/
 │               └── SseEmitterManager.java     # SSE 连接池管理
+│
+├── opendota-task/                   # 任务管理模块（新增）
+│   └── src/main/java/
+│       └── com.opendota.task/
+│           ├── controller/
+│           │   ├── TaskDefinitionController.java  # 任务定义 CRUD API
+│           │   ├── TaskDispatchController.java    # 任务分发状态查询 API
+│           │   └── VehicleQueueController.java    # 车端队列操控 API
+│           ├── service/
+│           │   ├── TaskDefinitionService.java     # 任务定义业务逻辑
+│           │   ├── TaskDispatchService.java       # 任务分发调度器（拆分下发 + 状态追踪）
+│           │   └── VehicleOnlineService.java      # 车辆在线状态管理
+│           ├── listener/
+│           │   └── EmqxWebhookListener.java       # EMQX Webhook 回调监听
+│           └── model/
+│               ├── TaskDefinition.java            # 任务定义实体
+│               ├── TaskDispatchRecord.java        # 分发记录实体
+│               └── VehicleOnlineStatus.java       # 车辆在线状态实体
 │
 ├── opendota-admin/                  # 管理后台模块 (ODX 导入、车型管理)
 │   └── src/main/java/
@@ -286,7 +647,7 @@ opendota-server/
         └── application-dev.yml
 ```
 
-### 4.2 核心 Java Bean 定义
+### 5.2 核心 Java Bean 定义
 
 #### 信封协议（Envelope）
 
@@ -342,7 +703,24 @@ public enum DiagAction {
     // 定时任务
     SCHEDULE_SET("schedule_set"),
     SCHEDULE_CANCEL("schedule_cancel"),
-    SCHEDULE_RESP("schedule_resp");
+    SCHEDULE_RESP("schedule_resp"),
+
+    // 多 ECU 编排脚本
+    SCRIPT_CMD("script_cmd"),
+    SCRIPT_RESP("script_resp"),
+
+    // 车端队列操控
+    QUEUE_QUERY("queue_query"),
+    QUEUE_DELETE("queue_delete"),
+    QUEUE_PAUSE("queue_pause"),
+    QUEUE_RESUME("queue_resume"),
+    QUEUE_STATUS("queue_status"),
+
+    // 任务控制
+    TASK_PAUSE("task_pause"),
+    TASK_RESUME("task_resume"),
+    TASK_CANCEL("task_cancel"),
+    TASK_QUERY("task_query");
 
     @JsonValue
     private final String value;
@@ -352,11 +730,11 @@ public enum DiagAction {
 
 ---
 
-## 5. 数据库设计
+## 6. 数据库设计
 
-### 5.1 PostgreSQL 核心表
+### 6.1 PostgreSQL 核心表
 
-详细的表结构定义见 [车云通讯协议规范 - 9.3.2 节](./opendota_protocol_spec.md)。此处补充工程实现相关的表：
+详细的 ODX 表结构定义见 [车云通讯协议规范 - 13.3.2 节](./opendota_protocol_spec.md)。此处补充工程实现相关的表：
 
 #### 诊断记录表 (`diag_record`)
 
@@ -404,7 +782,119 @@ CREATE TABLE batch_task (
 );
 ```
 
-### 5.2 TimescaleDB 时序扩展（后期启用）
+### 6.2 任务管理相关表（新增）
+
+#### 任务定义表 (`task_definition`)
+
+用于存储厂家侧创建的任务定义（含优先级、有效期、调度类型、诊断 payload）。
+
+```sql
+CREATE TABLE task_definition (
+    id                BIGSERIAL PRIMARY KEY,
+    task_id           VARCHAR(64) NOT NULL UNIQUE,       -- 任务全局唯一标识
+    task_name         VARCHAR(256) NOT NULL,             -- 任务名称
+    priority          INT DEFAULT 5,                     -- 优先级 (0=最高, 9=最低)
+    valid_from        TIMESTAMP,                         -- 任务有效期开始
+    valid_until       TIMESTAMP,                         -- 任务有效期截止
+    schedule_type     VARCHAR(32) NOT NULL,              -- 调度类型: once/periodic/timed/conditional
+    schedule_config   JSONB NOT NULL,                    -- 调度配置 (scheduleCondition JSON)
+    payload_type      VARCHAR(32) DEFAULT 'batch',       -- 诊断载荷类型: batch/script
+    diag_payload      JSONB NOT NULL,                    -- 诊断执行内容 (batch_cmd 或 script_cmd 的 payload)
+    status            VARCHAR(32) DEFAULT 'draft',       -- 任务状态: draft/active/paused/completed/expired
+    created_by        VARCHAR(64),                       -- 创建人
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_task_def_status ON task_definition(status);
+CREATE INDEX idx_task_def_priority ON task_definition(priority, created_at);
+```
+
+#### 任务目标车辆关联表 (`task_target`)
+
+支持按 VIN 列表、车型、标签等维度定义目标范围。
+
+```sql
+CREATE TABLE task_target (
+    id                BIGSERIAL PRIMARY KEY,
+    task_id           VARCHAR(64) NOT NULL,              -- 关联任务 ID
+    target_type       VARCHAR(32) NOT NULL,              -- 目标类型: vin_list/model/tag/all
+    target_value      JSONB NOT NULL,                    -- 目标值: VIN 数组 / 车型编码 / 标签名
+    FOREIGN KEY (task_id) REFERENCES task_definition(task_id)
+);
+
+CREATE INDEX idx_task_target_task ON task_target(task_id);
+```
+
+#### 任务分发记录表 (`task_dispatch_record`)
+
+每辆车的独立分发记录，追踪分发状态。
+
+```sql
+CREATE TABLE task_dispatch_record (
+    id                BIGSERIAL PRIMARY KEY,
+    task_id           VARCHAR(64) NOT NULL,              -- 关联任务 ID
+    vin               VARCHAR(17) NOT NULL,              -- 目标车辆
+    dispatch_status   VARCHAR(32) DEFAULT 'pending_online',  -- 分发状态:
+                                                         -- pending_online (待上线)
+                                                         -- dispatched (已下发)
+                                                         -- ack (已确认)
+                                                         -- executing (执行中)
+                                                         -- completed (已完成)
+                                                         -- failed (失败)
+    dispatched_at     TIMESTAMP,                         -- 实际下发时间
+    completed_at      TIMESTAMP,                         -- 完成时间
+    result_payload    JSONB,                             -- 执行结果 JSON
+    retry_count       INT DEFAULT 0,                     -- 重试次数
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (task_id) REFERENCES task_definition(task_id)
+);
+
+CREATE INDEX idx_dispatch_task_vin ON task_dispatch_record(task_id, vin);
+CREATE INDEX idx_dispatch_status ON task_dispatch_record(dispatch_status);
+CREATE INDEX idx_dispatch_vin_pending ON task_dispatch_record(vin, dispatch_status)
+    WHERE dispatch_status = 'pending_online';
+```
+
+#### 任务执行日志表 (`task_execution_log`)
+
+周期任务会有多次执行记录，每次执行独立记录。
+
+```sql
+CREATE TABLE task_execution_log (
+    id                BIGSERIAL PRIMARY KEY,
+    task_id           VARCHAR(64) NOT NULL,              -- 关联任务 ID
+    vin               VARCHAR(17) NOT NULL,              -- 执行车辆
+    execution_seq     INT NOT NULL,                      -- 执行序号（第 N 次执行）
+    trigger_time      TIMESTAMP NOT NULL,                -- 触发时间
+    overall_status    INT,                               -- 执行结果状态码
+    result_payload    JSONB,                             -- 详细结果 JSON
+    execution_duration INT,                              -- 执行耗时（毫秒）
+    created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_exec_log_task_vin ON task_execution_log(task_id, vin, execution_seq);
+```
+
+#### 车辆在线状态表 (`vehicle_online_status`)
+
+用于维护车辆的实时在线状态，支撑离线任务推送和批量分发。
+
+```sql
+CREATE TABLE vehicle_online_status (
+    id                BIGSERIAL PRIMARY KEY,
+    vin               VARCHAR(17) NOT NULL UNIQUE,       -- 车架号
+    is_online         BOOLEAN DEFAULT false,             -- 是否在线
+    last_online_at    TIMESTAMP,                         -- 最后上线时间
+    last_offline_at   TIMESTAMP,                         -- 最后离线时间
+    mqtt_client_id    VARCHAR(128),                      -- MQTT 客户端 ID
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_vehicle_online ON vehicle_online_status(is_online);
+```
+
+### 6.3 TimescaleDB 时序扩展（后期启用）
 
 当诊断日志量达到百万级时，可对 `diag_record` 表启用 TimescaleDB 时序优化：
 
@@ -421,9 +911,9 @@ SELECT add_retention_policy('diag_record', INTERVAL '90 days');
 
 ---
 
-## 6. 前端工程设计
+## 7. 前端工程设计
 
-### 6.1 工程结构
+### 7.1 工程结构
 
 ```
 opendota-web/
@@ -464,7 +954,7 @@ opendota-web/
         └── diag.d.ts                 # TypeScript 类型定义
 ```
 
-### 6.2 核心 SSE Hook
+### 7.2 核心 SSE Hook
 
 ```typescript
 // hooks/useSse.ts
@@ -473,15 +963,29 @@ import { useEffect, useRef, useCallback } from 'react';
 /**
  * SSE 订阅 Hook
  * 用于接收云端推送的诊断结果
+ *
+ * 断线重连说明：
+ * 浏览器原生 EventSource 在连接断开后会自动重连，并在重连请求中携带
+ * Last-Event-ID 头（值为最后一次收到的事件 id 字段）。后端据此从 PG 中
+ * 查询断线期间的记录并补发（详见 3.2.1 节）。
+ *
+ * 此处使用手动重连（而非 EventSource 默认重连）是为了支持指数退避策略，
+ * 避免服务端故障时大量客户端同时重连导致雪崩。
  */
 export function useSse(vin: string, onMessage: (event: string, data: any) => void) {
   const eventSourceRef = useRef<EventSource | null>(null);
+  const retryCountRef = useRef(0);
+  const maxRetryDelay = 30000; // 最大重连间隔 30 秒
 
   const connect = useCallback(() => {
     // 关闭已有连接
     eventSourceRef.current?.close();
 
     const es = new EventSource(`/api/sse/subscribe/${vin}`);
+
+    es.onopen = () => {
+      retryCountRef.current = 0; // 连接成功后重置重试计数
+    };
 
     // 监听诊断结果推送
     es.addEventListener('diag-result', (e) => {
@@ -498,10 +1002,15 @@ export function useSse(vin: string, onMessage: (event: string, data: any) => voi
       onMessage('batch-result', JSON.parse(e.data));
     });
 
-    // 断线自动重连
+    // 断线自动重连（指数退避 + 抖动）
+    // 注意：浏览器 EventSource 重连时会自动携带 Last-Event-ID，
+    // 后端据此补发断线期间的消息，无需前端额外处理
     es.onerror = () => {
       es.close();
-      setTimeout(connect, 3000); // 3 秒后重连
+      const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), maxRetryDelay);
+      const jitter = delay * 0.3 * Math.random(); // 30% 随机抖动
+      retryCountRef.current++;
+      setTimeout(connect, delay + jitter);
     };
 
     eventSourceRef.current = es;
@@ -516,13 +1025,13 @@ export function useSse(vin: string, onMessage: (event: string, data: any) => voi
 
 ---
 
-## 7. 车端模拟器
+## 8. 车端模拟器
 
-### 7.1 定位
+### 8.1 定位
 
 在 MVP 阶段，不涉及真实的车端程序开发。但为了端到端验证云端的全链路（下发 → MQTT → 回调 → Redis → SSE → 前端），需要一个**简单的 MQTT 客户端模拟器**来伪装成车端 Agent。
 
-### 7.2 模拟器功能
+### 8.2 模拟器功能
 
 | 功能 | 说明 |
 |:---|:---|
@@ -532,7 +1041,7 @@ export function useSse(vin: string, onMessage: (event: string, data: any) => voi
 | 发布 V2C 结果 | 将模拟结果组装为 Envelope 发布到 `dota/v1/resp/single/{vin}` |
 | 可配置延迟 | 模拟真实的车端执行耗时（1~3 秒随机延迟） |
 
-### 7.3 预置的模拟响应表
+### 8.3 预置的模拟响应表
 
 | 请求 reqData 前缀 | 模拟返回的 resData | 说明 |
 |:---|:---|:---|
@@ -545,15 +1054,18 @@ export function useSse(vin: string, onMessage: (event: string, data: any) => voi
 | `190209` | `5902090100018F` | 读 DTC：返回 1 个故障码 |
 | 其他 | `7F{SID}31` | 默认返回 NRC：RequestOutOfRange |
 
-### 7.4 实现建议
+### 8.4 实现建议
 
 可直接使用 Java 编写一个简易的 Spring Boot CLI 应用。也可以复用你们已有的 `vehicle-mqtt-simulator` 项目，仅需适配本协议的 Envelope 格式即可。
 
+> [!NOTE]
+> **DoIP 模拟说明**：MVP 阶段模拟器仅模拟 CAN 路径（`transport=UDS_ON_CAN`）。DoIP 路径的模拟（TCP Server + Routing Activation 响应 + DoIP Header 封装）计划在后续阶段实现。当前阶段若需验证 DoIP 协议字段的下发链路，可通过模拟器忽略 `transport` 字段、直接按 UDS PDU 返回固定响应的方式实现轻量级验证。
+
 ---
 
-## 8. 日志与可观测性
+## 9. 日志与可观测性
 
-### 8.1 日志规范
+### 9.1 日志规范
 
 > [!CAUTION]
 > 车云远程诊断涉及直接操作车辆 ECU，所有下发和回传必须留痕。日志是事故追责和问题排查的唯一依据。
@@ -601,9 +1113,9 @@ public class DiagTraceFilter implements Filter {
 
 ---
 
-## 9. MVP 开发路线图
+## 10. MVP 开发路线图
 
-### 9.1 阶段划分
+### 10.1 阶段划分
 
 ```mermaid
 gantt
@@ -628,17 +1140,25 @@ gantt
     ODX 编码引擎开发                  :p3_3, after p3_2, 2d
     ODX 翻译引擎开发                  :p3_4, after p3_3, 2d
 
+    section Phase 3.5 - 任务管理系统
+    任务定义 CRUD API 开发            :p35_1, after p3_2, 2d
+    任务分发调度器开发                :p35_2, after p35_1, 2d
+    EMQX Webhook 在线状态管理       :p35_3, after p35_1, 1d
+    离线任务推送机制开发              :p35_4, after p35_3, 2d
+    多 ECU 脚本与队列控制开发          :p35_5, after p35_2, 2d
+
     section Phase 4 - 前端界面
     React 工程搭建                   :p4_1, after p2_5, 1d
     诊断控制台页面开发                :p4_2, after p4_1, 3d
     批量任务页面开发                  :p4_3, after p4_2, 2d
+    任务管理与进度看板页面            :p4_4, after p4_3, 2d
 
     section Phase 5 - 集成验证
-    前后端联调                       :p5_1, after p4_3, 2d
+    前后端联调                       :p5_1, after p4_4, 2d
     全链路端到端测试                  :p5_2, after p5_1, 2d
 ```
 
-### 9.2 Phase 优先级与验收标准
+### 10.2 Phase 优先级与验收标准
 
 #### Phase 1：基础骨架（Day 1-2）
 **目标**：所有基础设施就绪，Spring Boot 能编译启动。
@@ -664,23 +1184,34 @@ gantt
 - [ ] 下发指令时自动从数据库读取 `requestRawHex`
 - [ ] 返回结果可被翻译为中文描述 + 物理值
 
-#### Phase 4：前端界面（Day 7-13，可与 Phase 3 并行）
-**目标**：有一个可用的诊断控制台界面。
+#### Phase 3.5：任务管理系统（Day 9-14，可与 Phase 3/4 并行）
+**目标**：任务 CRUD、分发调度、离线推送、队列控制全流程打通。
+- [ ] 任务定义 CRUD API 可用
+- [ ] EMQX Webhook 车辆在线状态维护正常
+- [ ] 在线车辆任务分发流程打通
+- [ ] 离线车辆上线后自动推送待下发任务
+- [ ] 多 ECU 编排脚本下发与结果收集
+- [ ] 车端任务队列查询与操控流程验证
+
+#### Phase 4：前端界面（Day 7-15，可与 Phase 3/3.5 并行）
+**目标**：有一个可用的诊断控制台和任务管理界面。
 - [ ] 左侧服务树 + 右侧结果终端的基础布局
 - [ ] 点击服务可触发诊断，结果实时显示
 - [ ] 批量任务 JSON 编辑与提交
+- [ ] 任务创建/列表/进度看板页面
 
-#### Phase 5：集成验证（Day 14-15）
+#### Phase 5：集成验证（Day 16-18）
 **目标**：全部功能联调通过。
 - [ ] 前端全流程可演示
 - [ ] 诊断记录可持久化查询
+- [ ] 任务分发与离线推送全流程验证
 - [ ] 基本的错误处理和超时处理
 
 ---
 
-## 10. 开发规约与约定
+## 11. 开发规约与约定
 
-### 10.1 代码规范
+### 11.1 代码规范
 
 | 规范项 | 约定 |
 |:---|:---|
@@ -691,7 +1222,7 @@ gantt
 | Record 类 | 优先使用 Java Record 定义不可变 DTO |
 | 枚举 | 所有协议相关的常量必须定义为枚举，禁止使用魔法数字和字符串 |
 
-### 10.2 Git 提交规范
+### 11.2 Git 提交规范
 
 ```
 feat: 新增单步诊断 API 接口
@@ -701,7 +1232,7 @@ docs: 更新车云协议规范文档
 chore: 升级 Spring Boot 至 4.0.1
 ```
 
-### 10.3 API 设计规范
+### 11.3 API 设计规范
 
 | 规范项 | 约定 |
 |:---|:---|
@@ -711,7 +1242,7 @@ chore: 升级 Spring Boot 至 4.0.1
 | 错误处理 | 使用 `@RestControllerAdvice` 全局异常处理 |
 | API 文档 | SpringDoc OpenAPI 3 自动生成，访问路径 `/swagger-ui.html` |
 
-### 10.4 配置文件约定
+### 11.4 配置文件约定
 
 ```yaml
 # application.yml 结构约定
