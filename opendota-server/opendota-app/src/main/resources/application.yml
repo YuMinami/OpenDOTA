@@ -1,0 +1,14 @@
+spring:
+  application:
+    name: opendota-server
+  threads:
+    virtual:
+      enabled: true               # 启用 Java 虚拟线程
+
+server:
+  port: 8080
+
+logging:
+  level:
+    com.opendota: DEBUG
+    org.springframework.web: INFO
