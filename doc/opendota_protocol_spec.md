@@ -1075,7 +1075,7 @@ Topic: `dota/v1/resp/script/{vin}`
 | IDLE | `channel_open` | ✅ 接受 | 进入 DIAG_SESSION |
 | IDLE | 任务触发执行 | ✅ 接受 | 进入 TASK_RUNNING |
 | **TASK_RUNNING** | `channel_open` | ❌ **拒绝** | 回复 `channel_event { event: "rejected", reason: "TASK_IN_PROGRESS" }` |
-| **DIAG_SESSION** | 任务到达执行时间 | ⏸️ **挂起不执行** | 任务标记为 `deferred`，上报 `schedule_resp { status: "DEFERRED" }` |
+| **DIAG_SESSION** | 任务到达执行时间 | ⏸️ **挂起不执行** | 任务标记为 `deferred`，上报 `schedule_resp { overallStatus: 5, taskStatus: "deferred" }` |
 | DIAG_SESSION | `channel_close` | → IDLE | 检查是否有被挂起的任务，按优先级恢复执行 |
 | TASK_RUNNING | 任务完成/失败 | → IDLE | 检查是否有排队中的任务，按优先级执行下一个 |
 
@@ -1116,13 +1116,21 @@ Topic: `dota/v1/resp/script/{vin}`
   "act": "schedule_resp",
   "payload": {
     "taskId": "task-cron-001",
-    "status": "DEFERRED",
+    "overallStatus": 5,
+    "taskStatus": "deferred",
     "reason": "DIAG_SESSION_ACTIVE",
     "deferredAt": 1713300100000,
     "msg": "在线诊断会话活跃中，任务执行被挂起"
   }
 }
 ```
+
+| 字段 | 类型 | 说明 |
+|:---|:---:|:---|
+| `overallStatus` | int | 固定值 `5`（DEFERRED），与 [14.2 节](#142-批量任务整体状态码-overallstatus) 统一 |
+| `taskStatus` | string | 车端队列状态字符串，固定值 `"deferred"`，与 [14.4 节](#144-任务状态域总表与跨域映射) 统一 |
+| `reason` | string | 挂起原因枚举：`"DIAG_SESSION_ACTIVE"` |
+| `deferredAt` | int64 | 挂起时刻的 Unix 毫秒时间戳 |
 
 ### 10.6 挂起任务恢复流程
 
@@ -1134,7 +1142,7 @@ sequenceDiagram
 
     Note over AGENT: 状态=DIAG_SESSION
     AGENT->>AGENT: 定时任务到达执行时间
-    AGENT->>CLOUD: schedule_resp {status:"DEFERRED"}
+    AGENT->>CLOUD: schedule_resp {overallStatus:5, taskStatus:"deferred"}
     Note over AGENT: 任务标记为 deferred
 
     CLOUD->>AGENT: channel_close
@@ -1219,9 +1227,21 @@ sequenceDiagram
 | `resourceState` | string | 当前资源状态（`"IDLE"` / `"DIAG_SESSION"` / `"TASK_RUNNING"`） |
 | `tasks[n].taskId` | string | 任务 ID |
 | `tasks[n].priority` | int | 任务优先级 |
-| `tasks[n].status` | string | 任务状态：`"executing"` / `"queued"` / `"paused"` / `"deferred"` |
+| `tasks[n].status` | string | 任务状态：`"executing"` / `"queued"` / `"paused"` / `"deferred"`。详见 [14.4 节](#144-任务状态域总表与跨域映射) |
 | `tasks[n].progress` | string | 执行进度描述（可选） |
 | `tasks[n].taskType` | string | 任务类型：`"batch_cmd"` / `"schedule_set"` / `"script_cmd"` |
+
+> [!IMPORTANT]
+> **车端→云端状态映射规则**：云端收到 `queue_status` 上报后，**必须**根据 `tasks[n].status` 同步更新对应的 `task_dispatch_record.dispatch_status`。映射关系如下：
+>
+> | 车端 `tasks[n].status` | 云端 `dispatch_status` 映射 |
+> |:---|:---|
+> | `queued` | `queued` |
+> | `executing` | `executing` |
+> | `paused` | `paused` |
+> | `deferred` | `deferred` |
+>
+> 当任务从队列中消失（即上一次上报存在但本次上报不存在），且未收到对应的结果上报（`batch_resp`/`schedule_resp`/`script_resp`），云端应将该记录标记为 `failed` 并触发告警。
 
 ### 11.4 队列删除 (`queue_delete`)
 
@@ -1345,7 +1365,10 @@ Topic: `dota/v1/cmd/control/{vin}`
 车端行为：
 - 如果任务正在执行，立即终止并清理资源（释放 ECU 通道、停止 `3E 80` 心跳）。
 - 从本地 SQLite 中删除该任务。
-- 通过 `schedule_resp` 上报取消确认（`overallStatus=7`，即 CANCELED）。
+- 通过对应类型的结果 Topic 上报取消确认（`overallStatus=4`，即 CANCELED）。具体上报的 `act` 和 Topic 取决于被取消任务的原始类型：
+  - `batch_cmd` 任务 → `batch_resp`（Topic: `dota/v1/resp/batch/{vin}`）
+  - `schedule_set` 任务 → `schedule_resp`（Topic: `dota/v1/resp/batch/{vin}`）
+  - `script_cmd` 任务 → `script_resp`（Topic: `dota/v1/resp/script/{vin}`）
 
 > [!NOTE]
 > `task_cancel` 是 `schedule_cancel` 的超集。`schedule_cancel` 仅能取消定时/周期任务，`task_cancel` 可以取消所有类型的任务（batch、schedule、script）。建议统一使用 `task_cancel`。
@@ -1828,6 +1851,8 @@ graph LR
 | `1` | PARTIAL_SUCCESS | 部分步骤成功，部分步骤失败 |
 | `2` | ALL_FAILED | 所有步骤全部失败 |
 | `3` | ABORTED | 因 `strategy=0` 遇错后任务被终止 |
+| `4` | CANCELED | 任务被云端主动取消（`task_cancel`），车端已终止执行并清理资源 |
+| `5` | DEFERRED | 任务被诊断会话挂起（仅 `schedule_resp` 使用），待诊断通道关闭后恢复执行 |
 
 ### 14.3 常见 UDS NRC 错误码 (`errorCode`)
 
@@ -1845,6 +1870,109 @@ graph LR
 | `NRC_37` | RequiredTimeDelayNotExpired | 安全锁定延迟未到期 |
 | `NRC_72` | GeneralProgrammingFailure | 编程失败 |
 | `NRC_78` | RequestCorrectlyReceived_ResponsePending | 请求已接收，响应待处理 |
+
+### 14.4 任务状态域总表与跨域映射
+
+> [!IMPORTANT]
+> OpenDOTA 系统中存在**四个独立的状态域**，各域职责不同、状态值不同。所有代码和文档必须严格区分，**禁止跨域混用**。
+
+#### 14.4.1 四个状态域定义
+
+| # | 状态域 | 归属 | 作用范围 | 数据类型 |
+|:---:|:---|:---|:---|:---|
+| 1 | `task_definition.status` | 云端数据库 | 任务定义的生命周期管理 | string (小写下划线) |
+| 2 | `task_dispatch_record.dispatch_status` | 云端数据库 | 每辆车的分发记录追踪 | string (小写下划线) |
+| 3 | `tasks[n].status`（车端队列状态） | 车端 SQLite / MQTT 上报 | 车端本地任务队列状态 | string (小写下划线) |
+| 4 | `resourceState`（车端资源状态） | 车端内存 / MQTT 上报 | 车端诊断硬件资源占用 | string (全大写下划线) |
+
+#### 14.4.2 域 1：任务定义状态 (`task_definition.status`)
+
+| 状态值 | 含义 | 转换条件 |
+|:---|:---|:---|
+| `draft` | 草稿 | 初始状态 |
+| `active` | 已激活 | 操作员发布任务 |
+| `paused` | 已暂停 | 操作员暂停任务分发 |
+| `completed` | 已完成 | 所有目标车辆的分发记录均达到终态 |
+| `expired` | 已过期 | `valid_until < now()` 自动标记 |
+
+#### 14.4.3 域 2：分发记录状态 (`task_dispatch_record.dispatch_status`)
+
+```
+                                    ┌───────────┐
+                            ┌──────►│  expired  │ (过期未下发)
+                            │       └───────────┘
+                     valid_until到期
+                            │
+┌────────────┐    下发成功   ┌────┴───┐   车端上报   ┌─────────┐
+│pending_    ├──────────────►│dispatched├───────────►│  queued  │
+│online      │              └────┬───┘              └────┬────┘
+└─────┬──────┘                   │                      │
+      │                    下发失败                  开始执行
+      │                          │                      ▼
+      │                   ┌──────▼──┐            ┌──────────┐
+      │                   │ failed  │            │executing  │
+      │                   └─────────┘            └──┬───┬───┘
+      │                                             │   │
+      │           ┌────────────────┬────────────────┘   │
+      │      诊断仪挂起        云端暂停              执行完成/失败
+      │           ▼                ▼                    ▼
+      │    ┌──────────┐    ┌──────────┐         ┌───────────┐
+      │    │ deferred  │    │ paused   │         │completed/ │
+      │    └──────────┘    └──────────┘         │ failed    │
+      │                                         └───────────┘
+      │         ┌──────────┐
+      └────────►│ canceled │◄──── 任何非终态均可取消
+                └──────────┘
+```
+
+| 状态值 | 含义 | 终态 |
+|:---|:---|:---:|
+| `pending_online` | 等待车辆上线后下发 | |
+| `dispatched` | 已通过 MQTT 下发，等待车端确认 | |
+| `queued` | 车端已确认收到，在队列中排队等待执行 | |
+| `executing` | 车端正在执行 | |
+| `paused` | 被云端暂停（`task_pause` / `queue_pause`） | |
+| `deferred` | 被诊断会话挂起，待通道关闭后自动恢复 | |
+| `completed` | 执行完成（不区分全部成功/部分成功，通过 `result_payload` 查看详情） | ✅ |
+| `failed` | 执行失败或下发失败 | ✅ |
+| `canceled` | 被云端主动取消（`task_cancel`） | ✅ |
+| `expired` | 有效期截止前未完成下发，自动过期 | ✅ |
+
+#### 14.4.4 域 3：车端队列状态 (`tasks[n].status`)
+
+| 状态值 | 含义 | 说明 |
+|:---|:---|:---|
+| `queued` | 在队列中排队 | 等待资源空闲 |
+| `executing` | 正在执行 | 占用诊断资源 |
+| `paused` | 已暂停 | 不参与调度，但保留在队列中 |
+| `deferred` | 被诊断会话挂起 | 诊断通道关闭后自动恢复为 `queued` |
+
+> [!NOTE]
+> 车端队列中**不存在终态**。任务完成/失败/取消后立即从队列中移除，通过对应的结果 Topic（`batch_resp` / `schedule_resp` / `script_resp`）上报最终结果。
+
+#### 14.4.5 域 4：车端资源状态 (`resourceState`)
+
+| 状态值 | 含义 |
+|:---|:---|
+| `IDLE` | 空闲，可接受任何诊断请求 |
+| `DIAG_SESSION` | 在线诊断仪占用中（`channel_open` 已建立） |
+| `TASK_RUNNING` | 后台任务正在执行 |
+
+> [!NOTE]
+> `resourceState` 使用**全大写下划线**命名风格，与其他三个状态域区分。这是因为 `resourceState` 描述的是车端硬件资源层面的互斥状态，属于不同的抽象维度。
+
+#### 14.4.6 车端上报 → 云端分发记录状态映射表
+
+| 触发事件 | 车端队列状态 | 云端 `dispatch_status` 映射 |
+|:---|:---|:---|
+| `queue_status` 上报中 `status=queued` | `queued` | → `queued` |
+| `queue_status` 上报中 `status=executing` | `executing` | → `executing` |
+| `queue_status` 上报中 `status=paused` | `paused` | → `paused` |
+| `schedule_resp` 上报 `overallStatus=5`（DEFERRED） | `deferred` | → `deferred` |
+| `batch_resp` / `script_resp` 上报 `overallStatus=0/1` | 已从队列移除 | → `completed` |
+| `schedule_resp` 上报 `overallStatus=0/1`（周期任务单次完成） | 仍在队列中 | → `executing`（周期任务持续运行） |
+| `*_resp` 上报 `overallStatus=2/3` | 已从队列移除 | → `failed` |
+| `*_resp` 上报 `overallStatus=4`（CANCELED） | 已从队列移除 | → `canceled` |
 
 ---
 

@@ -355,7 +355,7 @@ graph TB
 |:---|:---|
 | `taskId` | 关联任务 ID |
 | `vin` | 目标车辆 |
-| `dispatchStatus` | 分发状态（pending_online / dispatched / ack / executing / completed / failed） |
+| `dispatchStatus` | 分发状态（详见 [车云协议 14.4.3 节](./opendota_protocol_spec.md#1443-域-2分发记录状态-task_dispatch_recorddispatch_status)）：pending_online / dispatched / queued / executing / paused / deferred / completed / failed / canceled / expired |
 | `dispatchedAt` | 实际下发时间 |
 | `completedAt` | 完成时间 |
 | `resultPayload` | 执行结果 JSON |
@@ -536,15 +536,22 @@ public class EmqxWebhookController {
   "totalTargets": 5000,
   "progress": {
     "pending_online": 1200,
-    "dispatched": 800,
+    "dispatched": 300,
+    "queued": 500,
     "executing": 150,
+    "paused": 30,
+    "deferred": 20,
     "completed": 2700,
     "failed": 50,
-    "expired": 100
+    "canceled": 10,
+    "expired": 40
   },
   "completionRate": "54.0%"
 }
 ```
+
+> [!NOTE]
+> 进度字段的状态值与 `task_dispatch_record.dispatch_status` 的 10 个枚举值一一对应。详见 [车云协议 14.4.3 节](./opendota_protocol_spec.md#1443-域-2分发记录状态-task_dispatch_recorddispatch_status)。
 
 ---
 
@@ -835,13 +842,17 @@ CREATE TABLE task_dispatch_record (
     id                BIGSERIAL PRIMARY KEY,
     task_id           VARCHAR(64) NOT NULL,              -- 关联任务 ID
     vin               VARCHAR(17) NOT NULL,              -- 目标车辆
-    dispatch_status   VARCHAR(32) DEFAULT 'pending_online',  -- 分发状态:
+    dispatch_status   VARCHAR(32) DEFAULT 'pending_online',  -- 分发状态 (详见协议规范 14.4.3 节):
                                                          -- pending_online (待上线)
                                                          -- dispatched (已下发)
-                                                         -- ack (已确认)
+                                                         -- queued (车端已确认，排队中)
                                                          -- executing (执行中)
+                                                         -- paused (已暂停)
+                                                         -- deferred (被诊断会话挂起)
                                                          -- completed (已完成)
                                                          -- failed (失败)
+                                                         -- canceled (已取消)
+                                                         -- expired (已过期)
     dispatched_at     TIMESTAMP,                         -- 实际下发时间
     completed_at      TIMESTAMP,                         -- 完成时间
     result_payload    JSONB,                             -- 执行结果 JSON
