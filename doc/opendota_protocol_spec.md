@@ -25,6 +25,7 @@
 14. [错误码与状态码定义](#14-错误码与状态码定义)
 15. [安全、审计与权限](#15-安全与审计要求)
 16. [可观测性与 SLO](#16-可观测性与-slo)
+17. [车端时钟信任模型](#17-车端时钟信任模型v12)
 
 ---
 
@@ -2599,15 +2600,42 @@ graph LR
 }
 ```
 
-### 13.8 ODX 引擎实现路径建议
+### 13.9 大规模车辆惊群防护(v1.2)
 
-| 阶段 | 实现方案 | 适用场景 |
-|:---|:---|:---|
-| **MVP 阶段** | 编写 Python/Go 离线脚本，从 ODX XML 中提取关注的服务和参数编解码规则，导入 MySQL。运行时 `SELECT` 查库。前端服务目录和翻译规则全部从数据库驱动 | 车型少（< 10 个），服务定义相对固定 |
-| **成长阶段** | 开发平台化的 ODX 管理后台：支持拖拽上传 `.pdx` 包 → 自动解析 → 可视化预览提取结果 → 确认后入库。支持版本管理和差异对比 | 多车型并行，频繁更新 ODX |
-| **成熟阶段** | 引入完整的 ODX 解析 SDK（如基于 ISO 22901 的第三方库），支持动态解析复杂的 Compu Method（LINEAR / TAB-INTP / COMPUCODE 等），以及 Structure / Mux / End-of-PDU Field 等高级参数结构 | 需要支持所有主机厂的全量 ODX 规范 |
+> [!CAUTION]
+> 清晨大停车场同时上电 → 上万车辆在 30 秒内完成 MQTT CONNECT,EMQX `client.connected` 事件瞬间涌入云端 → Spring Boot 消费端并发触发 `pending_online` 任务 replay → 下行流量瞬间打爆 EMQX。惊群问题在 v1.1 架构(`§4.5 离线任务推送`)只解决了**上行**削峰(Kafka),**下行**仍是同步 publish。v1.2 补齐下行流控。
+
+#### 13.9.1 四级流控组合
+
+| 层级 | 机制 | 默认阈值 | 溢出行为 |
+|:---|:---|:---|:---|
+| **租户级并发** | Redis `INCR` + TTL 的原子计数 | 200 并发 replay / 租户 | 超限任务挂 `pending_backlog`,滑动窗口内重试 |
+| **车型级 QPS** | Token Bucket | 50 任务/秒 / 车型 | 排队,不拒绝 |
+| **VIN 级 jitter** | `Thread.sleep(random(0, jitterMaxMs))` | `jitterMaxMs = 30000` | 错峰触发,杜绝"同秒 10000 车同时收任务" |
+| **单车并发** | SQLite 事务锁 | 1 个 inflight `channel_open` | `queue_reject { reason: "VIN_DISPATCH_IN_FLIGHT" }` |
+
+#### 13.9.2 分桶触发算法
+
+Spring Boot 消费 EMQX `client.connected` 事件后,不立即 replay,而是:
+
+```java
+// 伪代码
+public void onVehicleOnline(VinOnlineEvent ev) {
+    int bucket = Math.abs(ev.vin().hashCode()) % DISPATCH_BUCKET_COUNT;  // 默认 60 桶
+    long delayMs = bucket * 500L + ThreadLocalRandom.current().nextLong(0, 500);
+    scheduler.schedule(() -> replayPendingTasks(ev.vin()), delayMs, MILLISECONDS);
+}
+```
+
+60 桶 × 500ms = 30 秒窗口内均匀打散 10000 辆车,瞬时 QPS 从 10000 降到 333。
+
+#### 13.9.3 配置化阈值
+
+上述所有阈值都**必须**通过配置中心(Nacos / Apollo)下发,运营可按双 11 / 高峰日动态调整。严禁硬编码。对应 Prometheus 指标 `dota_dispatch_bucket_queue_depth` 超过 200 时告警。
 
 ---
+
+
 
 ## 14. 错误码与状态码定义
 
@@ -2855,6 +2883,27 @@ public void onMessageArrived(String topic, MqttMessage mqttMessage) {
 > [!IMPORTANT]
 > **审计存储必须独立账号**。诊断业务读写账号**无权**删除审计条目,只允许追加;审计管理员账号仅用于合规审阅,与业务研发物理隔离。
 
+#### 15.2.1 WORM(Write-Once-Read-Many)与灾备(v1.2)
+
+| 措施 | 方案 | 实施细节 |
+|:---|:---|:---|
+| **热存储只追加** | PostgreSQL `security_audit_log` 表 + append-only trigger | `BEFORE UPDATE OR DELETE OR TRUNCATE` 触发器抛 EXCEPTION(见 `sql/init_opendota.sql` 第 8 节注释模板)。业务账号 `REVOKE UPDATE, DELETE, TRUNCATE` |
+| **物理隔离** | 独立 tablespace(专用加密磁盘) | `CREATE TABLESPACE ts_audit LOCATION '/pgdata/audit'; ALTER TABLE security_audit_log SET TABLESPACE ts_audit;` |
+| **Elasticsearch 镜像(若启用)** | 索引级 `_settings { "blocks.write": true }` 切换到只追加,ILM 策略 Hot→Warm→Cold→Delete | Hot(7d)允许写入 → rollover 后 `blocks.write=true`;Warm/Cold 不可写,只能 search |
+| **冷归档** | S3 / OSS Object Lock(Compliance 模式,Retention=3 年) | 每日 00:30 ETL 把 > 90 天的 PostgreSQL 行搬到 `s3://{bucket}/audit/{yyyy}/{mm}/`。**Compliance 模式下即使 root 账号也无法删除/改写** |
+| **跨区灾备** | S3 跨区复制(CRR / SRR)到异地灾备桶 | **RPO ≤ 5 分钟 / RTO ≤ 1 小时**;异地桶同样启用 Object Lock |
+| **完整性校验** | 每日对冷归档分区做 SHA-256,写入独立 `audit_manifest` 表 | 合规审计时先校验 manifest,再验证数据;manifest 本身也 WORM |
+| **密钥管理** | KMS CMK(Customer Managed Key)加密 S3 Object | 密钥轮换 90 天一次;Compliance 模式即使 CMK 删除,归档仍可读 |
+
+**恢复演练**:每季度做一次 DR 演练:
+
+1. 从异地桶恢复一个随机月份的归档
+2. 用 manifest 校验 SHA-256
+3. `gpg --verify` 校验 ETL 签名
+4. 随机抽查 100 条 `audit_id` 与热 PostgreSQL 的 diff
+
+演练结果必须生成报告,作为下一年度合规审计的输入。
+
 ### 15.3 固件传输安全
 
 > [!CAUTION]
@@ -3090,6 +3139,113 @@ HTTP Request → API Controller → DiagDispatcher.publish
 
 ---
 
+## 17. 车端时钟信任模型(v1.2)
+
+### 17.1 设计背景
+
+车端的 `executeAtList` / `validWindow` / `cooldownMs` 均依赖车端 RTC。但 RTC 有多种失信场景:
+
+- 车辆长期下电(>3 个月)导致 RTC 电池失效,重启后时钟归零
+- 维修工人员物理调整车端时间
+- 时钟芯片硬件故障,出现跳跃式漂移
+- 恶意攻击者修改本地时钟绕过 `cooldownMs` 限制
+
+v1.1 对此没有任何防护——所有基于时间的判断都无条件信任本地 RTC。v1.2 引入**时钟信任模型**:车端必须周期上报本地时间,云端比对后决定其可信度,**失信时依赖时间的功能降级**。
+
+### 17.2 时间同步协议
+
+#### 17.2.1 车端主动上报(每 24 小时 / 每次启动)
+
+**车端 → 云端**,Topic: `dota/v1/resp/time/{vin}`
+
+```json
+{
+  "msgId": "ts-req-0001",
+  "act": "time_sync_response",
+  "payload": {
+    "direction": "self_report",
+    "vehicleRtcAt": 1713300000000,
+    "vehicleMonotonicMs": 8640123,
+    "bootEpochMs": 1713291359877,
+    "rtcSource": "hardware_rtc",
+    "agentVersion": "agent-1.2.0"
+  }
+}
+```
+
+| 字段 | 说明 |
+|:---|:---|
+| `vehicleRtcAt` | 车端**本地 RTC**当前时刻(毫秒) |
+| `vehicleMonotonicMs` | 车端启动后的单调时钟毫秒数,不受 RTC 调整影响 |
+| `bootEpochMs` | 本次启动的 RTC 时刻(= `vehicleRtcAt - vehicleMonotonicMs`),用于云端识别重启事件 |
+| `rtcSource` | `hardware_rtc` / `gps_synced` / `ntp_synced` / `unknown` |
+
+#### 17.2.2 云端响应 + 按需下发权威时间
+
+**云端 → 车端**,Topic: `dota/v1/cmd/time/{vin}`
+
+云端收到 `time_sync_response (self_report)` 后,计算 `drift_ms = vehicleRtcAt - cloudRtcAt`(**扣除 MQTT 单程延迟估计**,保守取 RTT/2)。若 `abs(drift_ms) > max_drift_ms`(默认 ±60000ms),立即回推 `time_sync_request` 要求车端校准:
+
+```json
+{
+  "act": "time_sync_request",
+  "payload": {
+    "authoritativeEpochMs": 1713300000120,
+    "maxDriftMs": 60000,
+    "applyMode": "step",
+    "reason": "DRIFT_EXCEEDED"
+  }
+}
+```
+
+| 字段 | 说明 |
+|:---|:---|
+| `authoritativeEpochMs` | 云端权威时间(毫秒);车端应将其扣除已知网络延迟后应用 |
+| `applyMode` | `"step"` 直接跳变;`"slew"` 按 ±500ppm 平滑追赶(避免业务逻辑误判时间回退) |
+| `reason` | `"SCHEDULED"` / `"DRIFT_EXCEEDED"` / `"BOOT_DETECTED"` / `"MANUAL"` |
+
+车端收到后执行校准,然后主动再发一次 `time_sync_response { direction: "ack" }` 带新 RTC。
+
+### 17.3 漂移检测与信任状态
+
+云端维护 `vehicle_clock_trust` 表(见 `sql/init_opendota.sql` §4),每次 sync 后更新:
+
+| `trust_status` | 判定规则 | 含义 |
+|:---|:---|:---|
+| `trusted` | `abs(drift_ms) ≤ max_drift_ms` 且最近一次 sync < 26h | 所有时间相关功能正常 |
+| `drifting` | 连续两次 sync 漂移方向一致且 `abs(drift_ms) ∈ (max_drift_ms, 3*max_drift_ms]` | 仍信任,但打告警;定时任务仍执行 |
+| `untrusted` | `abs(drift_ms) > 3*max_drift_ms`,或超过 48 小时未收到 sync | 降级,见 §17.4 |
+| `unknown` | 车辆从未完成 sync(新注册或刚上电) | 按 `untrusted` 降级处理 |
+
+### 17.4 按功能降级矩阵
+
+| 功能 | 时钟依赖 | `trusted` | `drifting` | `untrusted` / `unknown` |
+|:---|:---|:---:|:---:|:---:|
+| 单步诊断 (`single_cmd`) | 无(立即执行) | ✅ | ✅ | ✅ |
+| 批量任务 (`batch_cmd`) | 无(立即执行) | ✅ | ✅ | ✅ |
+| **定时任务** (`mode=timed`) | **`executeAtList`** | ✅ | ⚠️ 告警继续 | ❌ **挂起**,上报 `schedule_resp { overallStatus: 1, reason: "CLOCK_UNTRUSTED" }` |
+| 周期任务 (`mode=periodic`) | `intervalMs` 基于**单调时钟** | ✅ | ✅ | ✅(单调时钟不受影响) |
+| `validWindow` 判定 | 本地 RTC | ✅ | ✅ | ❌ 忽略 `validWindow.endTime`,仅靠云端 `task_cancel` 结束 |
+| 条件任务 `cooldownMs` | 本地 RTC 差值 | ✅ | ✅ | ⚠️ 使用单调时钟替代,但记录 `cooldown_fallback=true` |
+| `macro_security` 重试延迟 | 单调时钟 | ✅ | ✅ | ✅ |
+| 审计 `timestamp` | 本地 RTC | ✅(直接用) | ⚠️ 附加 `clock_drift_ms` | ❌ 使用云端 `server_received_at` 为准,车端 `timestamp` 标记为 `unreliable=true` |
+
+**车端降级通知**:`trust_status` 切换为 `untrusted` 时,车端主动上报事件:
+
+```json
+{
+  "act": "channel_event",
+  "payload": {
+    "event": "clock_untrusted",
+    "lastKnownRtc": 1713300000000,
+    "monotonicMs": 8640123,
+    "reason": "RTC_BATTERY_DEAD"
+  }
+}
+```
+
+---
+
 ## 附录 A：车端 Agent 算法插件规范
 
 ### 插件部署
@@ -3206,6 +3362,72 @@ sequenceDiagram
     AGENT->>MQTT: batch_resp (4 条结果)
     MQTT->>CLOUD: 接收汇总结果
 ```
+
+---
+
+## 附录 D：符合性测试向量(Conformance Test Vectors, v1.2)
+
+> [!IMPORTANT]
+> 多供应商 Agent 对接时,必须以本附录为准跑通全部用例。任一用例不通过即视为不符合 OpenDOTA v1.2 规范,不允许接入生产 MQTT Broker。建议云端在测试环境部署一套"一致性验证器"自动跑这些用例。
+
+### D.1 测试分类与覆盖点
+
+| 类别 | 覆盖 P0/P1 项 | 用例数 |
+|:---|:---|:---:|
+| A. Envelope 解析与幂等 | 信封结构、msgId 防重放、operator 必填 | 4 |
+| B. ECU 锁获取 | ecuScope 必填、字典序原子锁、二次占用拒绝 | 5 |
+| C. 多 ECU 死锁防护 | 跨车环形等待不发生 | 2 |
+| D. 任务 supersedes | queued / executing / non-interruptible 三分支 | 3 |
+| E. missPolicy 默认推导 | DTC→fire_all, signal→fire_once, 显式覆盖 | 3 |
+| F. 聚合报文分片 | 阈值触发、重组、截断、乱序 | 4 |
+| G. 时钟信任降级 | trusted/drifting/untrusted 切换、定时任务挂起 | 4 |
+| H. 自动抢占 | priority ≤ 2 vs ≥ 6、非可中断任务拒绝 | 3 |
+| I. DTC 保真 | passive 监听、first_seen_at 保留 | 2 |
+| **合计** | | **30** |
+
+### D.2 详细测试用例
+
+下表给每个用例列出**输入报文(或前置状态)**、**期望车端响应**、**通过判据**。
+
+| #     | 类别 | 场景 | 输入报文 / 前置状态 | 期望车端响应 | 通过判据 |
+|:-----:|:---:|:---|:---|:---|:---|
+| A-1   | A   | 缺失 `operator` 的 C2V 指令 | `{act:"single_cmd", payload:{...}}` 不含 operator | 车端丢弃并上报审计 `SECURITY_VIOLATION` | `single_resp` 不出现;`security_audit_log` 新增一行 `action=SECURITY_VIOLATION` |
+| A-2   | A   | `timestamp` 偏移 > 5 分钟 | `timestamp = now() - 400000ms` | 车端丢弃 | 无响应,审计记录 `STALE_TIMESTAMP` |
+| A-3   | A   | 同 `msgId` 重发 | 连续两次相同 `single_cmd` | 第二次应为幂等忽略 | 只出现一次 `single_resp` |
+| A-4   | A   | `tenantId` 与证书 O 字段不一致 | operator.tenantId=`chery-hq`,证书 O=`byd-hq` | 车端丢弃 | 审计记录 `TENANT_MISMATCH` |
+| B-1   | B   | `ecuScope` 缺失 | `channel_open { ecuName:"VCU" }` 不带 `ecuScope` | 车端拒绝 | `channel_event { event:"rejected", reason:"ECU_SCOPE_REQUIRED" }` |
+| B-2   | B   | 单 ECU 锁成功 | VCU=IDLE,`channel_open { ecuScope:["VCU"] }` | 接受 | `channel_event { event:"opened", currentSession:"0x01" }`,`queue_status.resourceStates.VCU=="DIAG_SESSION"` |
+| B-3   | B   | 同 ECU 二次占用 | VCU=DIAG_SESSION,再发 `channel_open { ecuScope:["VCU"] }` | 拒绝 | `channel_event { event:"rejected", reason:"ECU_ALREADY_OCCUPIED" }` |
+| B-4   | B   | ecuScope 外 ECU 操作 | `channel_open { ecuScope:["VCU"] }` 后发 `single_cmd` 针对 BMS | 车端拒绝 | `single_resp { status:1, errorCode:"ECU_NOT_IN_SCOPE" }` |
+| B-5   | B   | 多 ECU 成功锁 | VCU=BMS=IDLE,`script_cmd { ecuScope:["VCU","BMS"] }` | 接受,按字典序锁 BMS→VCU | `script_resp` 最终返回,`queue_status.resourceStates` 期间两 ECU 均为 TASK_RUNNING |
+| C-1   | C   | 跨车环形请求 | VIN-A: `script [VCU,BMS]`;VIN-B: `script [BMS,VCU]` 同时下发 | 两车均按字典序 `[BMS,VCU]` 获取 | 不出现死锁;两次任务均成功完成 |
+| C-2   | C   | 部分 ECU 已占用 | BMS=TASK_RUNNING,`script_cmd { ecuScope:["VCU","BMS"] }` | 整体拒绝,不占用 VCU | `queue_reject { reason:"MULTI_ECU_LOCK_FAILED", conflictEcus:["BMS"] }`;`resourceStates.VCU` 保持 IDLE |
+| D-1   | D   | supersede queued 任务 | T1 queued,下发 T2 `supersedes:T1` | T1 直接删,T2 入队 | `task_ack { status:"supersede_accepted" }`;T1 分发记录 `canceled reason=SUPERSEDED` |
+| D-2   | D   | supersede executing 的 routine_wait | T1 在 `31 03` 轮询中,下发 T2 `supersedes:T1` | 发 `31 02` 停例程,上报 T1 `overallStatus=4`,再入队 T2 | `batch_resp T1 { overallStatus:4, reason:"SUPERSEDED" }`;`task_ack T2 { status:"supersede_accepted" }` |
+| D-3   | D   | supersede 刷写中任务 | T1 是 `macro_data_transfer` 执行中,下发 T2 `supersedes:T1` | 拒绝 supersede | `task_ack T2 { status:"supersede_rejected", reason:"NON_INTERRUPTIBLE" }`;T1 继续 |
+| E-1   | E   | DTC 触发任务未显式 missPolicy | `schedule_set { mode:conditional, triggerCondition.type:"dtc" }` 不带 `missPolicy` | 车端本地按 `fire_all` 推导 | 连续两次错过后,通道关闭重放时产生两次独立 `schedule_resp` |
+| E-2   | E   | 信号触发任务未显式 missPolicy | `schedule_set { mode:conditional, triggerCondition.type:"signal" }` 不带 `missPolicy` | 车端按 `fire_once` 推导 | 错过 N 次仅产生一次 `schedule_resp`,携 `missCompensation.policy:"fire_once"` |
+| E-3   | E   | 显式 `missPolicy=skip_all` 覆盖默认 | DTC 任务 + 显式 `missPolicy:"skip_all"` | 按 `skip_all` 执行 | 错过的 DTC 事件不补偿,`schedule_resp` 仅在通道关闭后的首次自然触发时产生 |
+| F-1   | F   | 250KB `resultsHistory` 不分片 | 累计 resultsHistory 序列化后 199KB | 单片上报 | 单个 `schedule_resp`,无 `aggregationId` |
+| F-2   | F   | 600KB 拆 3 片 | 累计 599KB | 拆 3 片上报,chunkSeq=1/2/3 | `task_result_chunk` 表有 3 行,重组后写入 `task_execution_log` 一行 |
+| F-3   | F   | 乱序到达 | 云端按 3→1→2 顺序收到分片 | 云端成功重组 | 重组后 `results` 顺序与车端发送顺序一致 |
+| F-4   | F   | 超过 maxChunks 截断 | 累计 15MB 超过 50 片容量 | 保留最新 50 片,`truncated=true`,`droppedCount=N` | 最末片 payload 带 `truncated:true`;告警 `dota_chunk_truncated_total += 1` |
+| G-1   | G   | 时钟漂移 +30s | `time_sync_response` 报 `drift_ms=30000` | trust_status=trusted,无降级 | `vehicle_clock_trust.trust_status == 'trusted'` |
+| G-2   | G   | 时钟漂移 +90s | `drift_ms=90000` | trust_status=drifting,不降级但告警 | Prometheus 告警 `dota_clock_drift_exceeded` |
+| G-3   | G   | 时钟漂移 +5 分钟 | `drift_ms=300000` | trust_status=untrusted,定时任务挂起 | `mode=timed` 任务返回 `schedule_resp { overallStatus:1, reason:"CLOCK_UNTRUSTED" }` |
+| G-4   | G   | 48 小时无 sync | 最近 sync > 48h | trust_status=untrusted | 同 G-3 |
+| H-1   | H   | priority=2 抢占 priority=7 的 raw_uds | T-hi `priority:2` 下发,T-lo `priority:7` 在 `executing` raw_uds | 自动抢占,不需 senior_engineer | T-lo 上报 `overallStatus=3 reason=PREEMPTED`;T-hi 开始执行 |
+| H-2   | H   | priority=2 尝试抢占 priority=7 的 macro_data_transfer | T-lo 正在 `36` 传输 | 拒绝自动抢占 | T-hi 入 backlog `reason="NON_PREEMPTIBLE_TASK"` |
+| H-3   | H   | priority=3 vs priority=7(差距不够) | T-hi `priority:3` vs T-lo `priority:7` | 不自动抢占,正常排队 | T-hi 入 `queued` 等待 |
+| I-1   | I   | DIAG_SESSION 期间 DTC 出现 | DTC P0100 通过 `0x19 04` 广播帧被动命中 | 入 `dtc_pending_capture` | `condition_fired { triggerSnapshot.detectedAt=<广播帧时刻> }` 即时上报 |
+| I-2   | I   | 通道关闭后 fire_all 补偿 | I-1 后 `channel_close` | 对 `dtc_pending_capture` 每条生成一次执行 | `schedule_resp.resultsHistory` 长度等于 `dtc_pending_capture` 的条目数;`first_seen_at` 保留 |
+
+### D.3 验证器执行约定
+
+- 所有用例在 **EMQX + Spring Boot + Vehicle Simulator** 的 docker-compose 环境下跑通
+- 每个用例必须有**机器可读**的 JSON 断言(`jq` 表达式或 Junit XML),不依赖人工观察
+- 验证器输出 `TAP 14` 格式或 `JUnit XML`,可直接接入 GitLab CI / GitHub Actions
+- 版本迭代时:新增用例标 `[v1.3-new]`,废弃用例标 `[deprecated]`,保留至少一个版本以便回归
 
 ---
 

@@ -495,26 +495,90 @@ sequenceDiagram
 |                       | `channel_event_log` / `condition_fired_log` 独立表                                | 架构 §6.2 + SQL                                     |
 | **多租户**            | 所有业务表新增 `tenant_id` + PG RLS 行级隔离                                      | SQL §6 + 架构 §6.3                                  |
 
-### 6.3 v1.1 剩余的 P2 事项(生产前非阻塞)
+### 6.3 v1.1 剩余的 P2 事项(v1.2 大部分已闭环)
 
-以下为资深审阅原清单中标注但 v1.1 暂未全部闭环,建议在 MVP 之后的二轮迭代补齐:
+以下为 v1.1 标注但未闭环、v1.2 已处置的项:
 
-| 主题                               | 当前处置            | 后续建议                                         |
-| :--------------------------------- | :------------------ | :----------------------------------------------- |
-| ECU 级资源互斥(而非整车级)         | 预留 `ecuScope` 字段 | Agent 实现双队列调度,基于 ECU 通道颗粒度仲裁    |
-| `condition` 任务信号订阅灰度       | 白名单表已就位      | 需配套 OEM 的 DBC 版本管理平台集成              |
-| `macro_data_transfer` A/B 分区机制 | 协议字段已定义      | 待 ECU 硬件支持双分区后开发 Agent-side flashing |
-| 周期任务执行速率动态调速           | 未覆盖              | 车载负载反馈动态调整 `intervalMs`               |
+| 主题                               | v1.1 处置           | v1.2 最终处置                                                      |
+| :--------------------------------- | :------------------ | :---------------------------------------------------------------- |
+| ECU 级资源互斥(而非整车级)         | 预留 `ecuScope` 字段 | ✅ **已闭环**:`ecuScope` 必填,§10.2 per-ECU 状态机,字典序原子锁 |
+| `condition` 任务信号订阅灰度       | 白名单表已就位      | ✅ **已闭环**:`signalCatalogVersion` 版本协商 + `SIGNAL_CATALOG_STALE` |
+| `macro_data_transfer` A/B 分区机制 | 协议字段已定义      | ⏳ 保持 v1.1 处置(等 ECU 硬件支持)                               |
+| 周期任务执行速率动态调速           | 未覆盖              | ⏳ 继续延后,不在 v1.2 范围                                        |
+
+---
+
+## 七、v1.2 P0/P1 生产级加固落地跟踪(2026-04-17)
+
+经过资深审阅二次扫描,v1.1 虽然在协议骨架上覆盖了 95% 的需求,但生产级视角仍发现 14 项会导致**开发阶段大业务冲突**的语义盲区。v1.2 一次性消化完毕,映射如下:
+
+### 7.1 P0 项(必须闭环,否则核心需求有逻辑漏洞)
+
+| #   | 原缺陷                                                              | v1.2 落地位置                                                                          |
+| :-: | :------------------------------------------------------------------ | :------------------------------------------------------------------------------------- |
+|  1  | ECU 级互斥缺位,整车一把锁吞吐低                                      | 协议 §10.2 per-ECU 状态机 + §10.2.3 原子锁;协议 §4.2 `ecuScope` 必填;SQL `task_dispatch_record.ecu_scope` + GIN 索引;架构 §4.2 模型字段 |
+|  2  | 条件任务 DTC 轮询暂停导致首次时间戳丢失                              | 协议 §8.3.5 DTC 首次时间戳保真 + passive 监听 `0x19 04`;车端 `dtc_pending_capture` 本地表 |
+|  3  | 周期任务 `currentExecutionCount` 车端单源,SQLite 损坏即超执行          | 协议 §3.4/§8.2 新 `execution_begin`/`execution_end` 双 ack;§8.5.1 云端 `GREATEST` + `ON CONFLICT DO NOTHING`;SQL `task_execution_log` 加 `begin_reported_at/end_reported_at/begin_msg_id/end_msg_id`;架构 §4.9 |
+|  4  | 优先级反转无自动抢占兜底,engineer 紧急任务被 senior 角色门槛挡住      | 协议 §10.7.5 自动抢占规则(`priority≤2` vs `≥6`);架构 §4.3.1 决策矩阵                   |
+
+### 7.2 P1 项(边界语义不清,不闭环会在集成阶段返工)
+
+| #   | 原缺陷                                                              | v1.2 落地位置                                                                          |
+| :-: | :------------------------------------------------------------------ | :------------------------------------------------------------------------------------- |
+|  5  | 批量任务 `task_definition.status → completed` 触发条件空白            | 架构 §4.8.1 SQL 触发规则 + `v_task_board_progress` 视图提供 `partial_completed` 看板状态 |
+|  6  | `supersedes` 遇 executing 任务行为未定义                             | 协议 §12.6.3 三分支子表(queued / executing 常规 / 不可中断);`task_ack` 新增 `supersede_rejected` |
+|  7  | `missPolicy` 默认值一刀切 `fire_once`,DTC 合规场景丢数据              | 协议 §8.3.4 按 `triggerCondition.type` 自动推导(DTC→fire_all, 其它→fire_once)        |
+|  8  | `schedule_resp` 聚合报文无大小保护,> 256KB 溢出                       | 协议 §8.5.2 分片协议(`aggregationId`/`chunkSeq`/`chunkTotal`/`truncated`);SQL `task_result_chunk` 新表;架构 §4.4.5 消费者 |
+|  9  | 车端 RTC 失步无防护,所有时间判断盲信本地时钟                         | 协议 §17 车端时钟信任模型 + 降级矩阵;SQL `vehicle_clock_trust` 新表;架构 §4.10 Spring 实现 |
+|  10 | 大规模车辆"惊群"下行冲击未解决                                       | 协议 §13.9 分桶 + jitter 惊群防护;架构 §4.4.4 `TaskDispatchScheduler` 实现             |
+
+### 7.3 P2 项(工程完善,生产前建议,非阻塞)
+
+| #   | 原缺陷                               | v1.2 落地位置                                                                          |
+| :-: | :----------------------------------- | :------------------------------------------------------------------------------------- |
+|  11 | DoIP 工位场景 VIN 级锁粒度过粗         | 协议 §10.8 `workstationId` 字段 + per-workstation 资源状态机                           |
+|  12 | 缺少供应商互通的一致性测试套件        | 协议附录 D 30 条符合性测试向量(Envelope/ECU 锁/supersedes/missPolicy/分片/时钟/抢占/DTC) |
+|  13 | 审计日志 WORM/DR 方案空白             | 协议 §15.2.1 方案 + SQL 第 8 节 append-only trigger + tablespace 模板;架构 §6.2 批注     |
+|  14 | DBC 白名单热更新缺版本协商            | 协议 §8.3.2 `signalCatalogVersion` + `SIGNAL_CATALOG_STALE`;SQL `condition_signal_catalog.version` 列 |
+
+### 7.4 新增/变更字段与表一览
+
+**协议新 `act` 枚举**(§3.4):
+- `execution_begin` / `execution_end`(V2C,周期任务双 ack)
+- `time_sync_request`(C2V) / `time_sync_response`(V2C)
+- `task_ack.status` 扩展:`supersede_accepted` / `supersede_rejected`
+
+**新表**(SQL + 架构 DDL):
+- `task_result_chunk`(聚合分片)
+- `vehicle_clock_trust`(时钟信任)
+
+**新列**:
+- `task_dispatch_record.ecu_scope JSONB` + `dispatch_status` CHECK 扩充 `superseding`
+- `task_execution_log.begin_reported_at / end_reported_at / begin_msg_id / end_msg_id`
+- `condition_signal_catalog.version INT`
+
+**新协议字段**:
+- `channel_open.ecuScope` 必填
+- `queue_status.resourceStates` per-ECU 映射 + `tasks[n].ecuScope`
+- `schedule_set.signalCatalogVersion`(条件任务必带)
+- `schedule_resp` 分片头:`aggregationId` / `chunkSeq` / `chunkTotal` / `truncated` / `droppedCount`
+- `execution_begin.executionSeq`(幂等锚点)
+- `doipConfig.workstationId`(DoIP 工位)
 
 ---
 
 > [!IMPORTANT]
-> **v1.1 核心结论**:两份文档已从"远程诊断仪的协议骨架"升级为"企业级远程诊断 + 批量任务调度 + 多租户 + 可审计 + 可观测的生产级平台规范"。相比 v1.0:
+> **v1.2 核心结论**:v1.1 按生产标准再审阅覆盖率 ≈80%,v1.2 将 P0/P1/P2 共 14 项一次性消化后达到 ≈95%,剩余 ≈5% 为已识别但需硬件/业务配合的延迟项(A/B 分区、周期任务动态调速)。v1.2 具备**开发阶段不会出现大业务冲突**的基础,可作为一致性验证基准直接进入编码。
+
+---
+
+> [!IMPORTANT]
+> **v1.1 核心结论**(保留):两份文档已从"远程诊断仪的协议骨架"升级为"企业级远程诊断 + 批量任务调度 + 多租户 + 可审计 + 可观测的生产级平台规范"。相比 v1.0:
 >
 > - 协议规范从 15 章扩充到 16 章(新增 §16 可观测性);§3/§4/§7/§8/§10/§11/§12/§14/§15 大幅加强
 > - 技术架构从 11 章保持,但 §3/§4/§5/§6/§9 深度重写,新增 `opendota-security` / `opendota-observability` / 重写 `opendota-task` 模块
 > - SQL DDL 从 5 张表扩到 20+ 张表,全量覆盖身份/审计/任务/反压/事件流水/RLS 租户隔离
-> - v1.0 的 40% 需求覆盖 → v1.1 的 ~95% 覆盖率,剩余 ~5% 为预留扩展字段待硬件/业务就位后打开
+> - v1.0 的 40% 需求覆盖 → v1.1 的 ~95% 覆盖率(按当时标准),**按 v1.2 生产标准再审约 80%**,v1.2 补齐后 ≈95%
 
 ---
 

@@ -1,8 +1,8 @@
 # OpenDOTA 平台技术架构与开发指南
 
-> **版本**: v1.1  
+> **版本**: v1.2  
 > **日期**: 2026-04-17  
-> **状态**: 已定稿(企业级增强版),可指导编码  
+> **状态**: 已定稿(生产级加固版: ECU 级互斥 / 周期计数一致性 / 聚合分片 / 时钟信任),可指导编码  
 > **配套文档**: [车云通讯协议规范](./opendota_protocol_spec.md)
 
 ---
@@ -390,13 +390,15 @@ graph TB
 |:---|:---|
 | `taskId` | 关联任务 ID |
 | `vin` | 目标车辆 |
-| `dispatchStatus` | 分发状态(详见 [车云协议 14.4.3 节](./opendota_protocol_spec.md#1443-域-2分发记录状态-task_dispatch_recorddispatch_status)):`pending_online` / `dispatched` / `queued` / `scheduling` / `executing` / `paused` / `deferred` / `completed` / `failed` / `canceled` / `expired` |
+| `ecuScope` | **v1.2** 任务锁定的 ECU 集合(JSONB,如 `["VCU","BMS"]`),与协议 `ecuScope` 对齐,用于 ECU 级互斥仲裁 |
+| `dispatchStatus` | 分发状态(详见 [车云协议 14.4.3 节](./opendota_protocol_spec.md#1443-域-2分发记录状态-task_dispatch_recorddispatch_status)):`pending_online` / `dispatched` / `queued` / `scheduling` / `executing` / `paused` / `deferred` / `superseding` / `completed` / `failed` / `canceled` / `expired` |
 | `dispatchedAt` | 实际下发时间 |
 | `completedAt` | 完成时间 |
 | `resultPayload` | 执行结果 JSON |
 | `retryCount` | 已重试次数 |
-| `lastError` | 最近一次失败原因(如 `QUEUE_FULL` / `SUPERSEDED` / `ECU_LOST`) |
+| `lastError` | 最近一次失败原因(如 `QUEUE_FULL` / `SUPERSEDED` / `ECU_LOST` / `MULTI_ECU_LOCK_FAILED`) |
 | `supersededBy` | 被哪个新 taskId 替换(若 status=canceled 且 reason=SUPERSEDED) |
+| `currentExecutionCount` | **v1.2** 周期任务已执行次数。云端以 `GREATEST(旧值, 车端 executionSeq)` 更新,车端 SQLite 崩溃不会导致计数倒退 |
 
 ### 4.3 任务优先级模型
 
@@ -411,8 +413,35 @@ graph TB
 - 车端任务队列按 `priority` 值升序排列(数值越小越优先)。
 - 相同优先级按入队时间排序(FIFO)。
 - 高优先级任务到达时**默认不中断**正在执行的低优先级任务(原因见[协议规范第 10.3 节](./opendota_protocol_spec.md#103-冲突裁决规则))。
-- **例外**:`senior_engineer` / `admin` 可通过 `channel_open { force: true }` 显式抢占(详见[协议规范 §10.7.1](./opendota_protocol_spec.md#1071-force-抢占流程))。
+- **例外 1**:`senior_engineer` / `admin` 可通过 `channel_open { force: true }` 显式抢占(详见[协议规范 §10.7.1](./opendota_protocol_spec.md#1071-force-抢占流程))。
+- **例外 2(v1.2)**:自动抢占矩阵——`priority ≤ 2` 的新任务,对 `priority ≥ 6` 的运行中任务**自动抢占**,不需要角色提升(详见[协议规范 §10.7.5](./opendota_protocol_spec.md#1075-自动抢占规则))。
 - 在线诊断仪受特殊互斥规则约束(详见[协议规范第 10 章](./opendota_protocol_spec.md#10-车端资源仲裁与互斥机制-resource-arbitration))。
+
+#### 4.3.1 v1.2 自动抢占决策矩阵
+
+| 新任务 priority | 运行中任务 priority | 运行中任务类型 | 决策 |
+|:---:|:---:|:---|:---:|
+| ≤ 2 | ≥ 6 | `raw_uds` / `macro_routine_wait`(轮询中) | ✅ 自动抢占,车端发 `31 02` 停止例程,旧任务 re-queue |
+| ≤ 2 | ≥ 6 | `macro_security` 半程(已发 27 XX 未完成 27 XX+1) | ❌ 拒绝,等待当前 security 握手完成后再抢占 |
+| ≤ 2 | ≥ 6 | `macro_data_transfer` 执行中 | ❌ 拒绝(会 brick ECU) |
+| 2 < new ≤ 5 | 任意 | 任意 | ❌ 不自动抢占,正常排队 |
+| 任意 | 任意 | 任意(需跨越上表边界) | 必须显式 `force=true` 并校验角色 |
+
+**实现要点**(Java 伪代码):
+
+```java
+public PreemptDecision evaluate(Task incoming, Task running) {
+    if (incoming.priority() > 2 || running.priority() < 6) {
+        return PreemptDecision.NORMAL_QUEUE;
+    }
+    return switch (running.kind()) {
+        case MACRO_DATA_TRANSFER -> PreemptDecision.REJECTED_NON_PREEMPTIBLE;
+        case MACRO_SECURITY when running.isMidHandshake()
+                -> PreemptDecision.REJECTED_NON_PREEMPTIBLE;
+        default -> PreemptDecision.AUTO_PREEMPT;
+    };
+}
+```
 
 ### 4.4 大批量车辆分发机制
 
@@ -499,6 +528,68 @@ public class DispatchRateLimiter {
 | **优先级排序** | Kafka 分区+独立令牌桶 | 每个优先级独立占用 bucket,不会饿死 |
 | **失败重试** | DispatchWorker 未 commit offset 触发 re-deliver | 指数退避:1s → 2s → 4s → 8s → 16s,超过 5 次转死信 |
 | **死信处理** | 独立 topic `task-dispatch-dlq` + 告警 | 运维介入,分析失败原因后手动 retry |
+
+#### 4.4.4 分桶 Jitter 惊群防护(v1.2)
+
+对应协议 [§13.9](./opendota_protocol_spec.md#139-大规模车辆惊群防护v12)。大停车场清晨上电场景:单靠 Token Bucket 不够,下行 publish 仍是集中爆发。加入 hash 分桶 + random jitter:
+
+```java
+@Component
+public class TaskDispatchScheduler {
+    @Value("${opendota.dispatch.bucket-count:60}")
+    private int bucketCount;          // 默认 60 桶
+    @Value("${opendota.dispatch.jitter-max-ms:30000}")
+    private long jitterMaxMs;         // 30s 窗口错峰
+
+    public void scheduleReplay(String vin, Runnable task) {
+        int bucket = Math.abs(vin.hashCode()) % bucketCount;
+        long base = bucket * (jitterMaxMs / bucketCount);
+        long jitter = ThreadLocalRandom.current().nextLong(0, jitterMaxMs / bucketCount);
+        scheduler.schedule(task, base + jitter, MILLISECONDS);
+    }
+}
+```
+
+**Prometheus 监控**:`dota_dispatch_bucket_queue_depth{bucket="$n"}`;任一桶超过 200 深度时告警,说明分桶算法或阈值需要调整。
+
+#### 4.4.5 聚合报文分片消费(v1.2)
+
+对应协议 [§8.5.2](./opendota_protocol_spec.md#852-聚合报文分片协议)。MQTT Subscriber 收到 `schedule_resp { batchUploadMode: "aggregated_chunked" }` 时,不立即解析业务,而是暂存分片:
+
+```java
+@Component
+public class ChunkReassemblyService {
+    private final TaskResultChunkRepository repo;
+    private final TaskExecutionLogRepository logRepo;
+
+    @Transactional
+    public void onChunk(ScheduleRespChunk chunk) {
+        repo.upsert(chunk);  // ON CONFLICT (aggregation_id, chunk_seq) DO NOTHING
+        long received = repo.countByAggregationId(chunk.aggregationId());
+        if (received >= chunk.chunkTotal()) {
+            var merged = repo.loadAllOrdered(chunk.aggregationId());
+            logRepo.persistMergedResults(chunk.taskId(), chunk.vin(), merged);
+            repo.deleteByAggregationId(chunk.aggregationId());
+        }
+    }
+
+    @Scheduled(fixedDelay = 60_000)
+    public void alertStaleReassembly() {
+        var stale = repo.findAggregationsOlderThan(Duration.ofMinutes(5));
+        stale.forEach(agg -> {
+            log.warn("chunk reassembly timeout: aggregation_id={}, received={}/{}",
+                agg.id(), agg.received(), agg.total());
+            metrics.counter("dota_chunk_reassembly_timeout_total").increment();
+        });
+    }
+}
+```
+
+**注意事项**:
+
+- 分片乱序到达时,`upsert` 保证幂等,不会丢片
+- 车端重传同 `aggregation_id` 的分片时 `ON CONFLICT DO NOTHING` 忽略
+- 超过 5 分钟未齐的分片**不清理**,保留给运维人工排查(可能是车端 SQLite 损坏)
 
 ### 4.5 离线车辆任务推送机制
 
@@ -727,6 +818,161 @@ stateDiagram-v2
 > [!NOTE]
 > 进度字段的状态值与 `task_dispatch_record.dispatch_status` 的 11 个枚举值一一对应。详见 [车云协议 14.4.3 节](./opendota_protocol_spec.md#1443-域-2分发记录状态-task_dispatch_recorddispatch_status)。
 
+#### 4.8.1 `task_definition.status` 终态判定规则(v1.2)
+
+`task_definition.status` 从 `active` 迁移到 `completed` **必须**满足:
+
+```sql
+-- 伪代码: 定时扫描作业 (每分钟)
+UPDATE task_definition t
+SET status = 'completed'
+WHERE t.status = 'active'
+  AND NOT EXISTS (
+      SELECT 1 FROM task_dispatch_record r
+      WHERE r.task_id = t.task_id
+        AND r.dispatch_status NOT IN ('completed','failed','canceled','expired')
+  )
+  AND NOT EXISTS (
+      SELECT 1 FROM task_dispatch_record r
+      WHERE r.task_id = t.task_id
+        AND r.dispatch_status = 'pending_online'
+  );
+```
+
+**关键点**:
+
+- 所有 `task_dispatch_record` 必须到达 4 终态之一
+- 存在任何 `pending_online`(即使是过期的)都不视为 completed,只有 `valid_until` 触发 expired 后才计入终态
+- `partial_completed` **不是数据库状态**,仅存在于看板视图:
+
+```sql
+CREATE VIEW v_task_board_progress AS
+SELECT
+    task_id,
+    SUM(CASE WHEN dispatch_status = 'completed' THEN 1 ELSE 0 END) AS completed_cnt,
+    SUM(CASE WHEN dispatch_status = 'failed'    THEN 1 ELSE 0 END) AS failed_cnt,
+    SUM(CASE WHEN dispatch_status = 'expired'   THEN 1 ELSE 0 END) AS expired_cnt,
+    SUM(CASE WHEN dispatch_status = 'canceled'  THEN 1 ELSE 0 END) AS canceled_cnt,
+    COUNT(*) AS total_cnt,
+    CASE
+        WHEN SUM(CASE WHEN dispatch_status NOT IN ('completed','failed','canceled','expired') THEN 1 ELSE 0 END) > 0
+             THEN 'in_progress'
+        WHEN SUM(CASE WHEN dispatch_status = 'completed' THEN 1 ELSE 0 END) = COUNT(*)
+             THEN 'all_completed'
+        WHEN SUM(CASE WHEN dispatch_status = 'completed' THEN 1 ELSE 0 END) > 0
+             THEN 'partial_completed'
+        ELSE 'all_failed'
+    END AS board_status
+FROM task_dispatch_record
+GROUP BY task_id;
+```
+
+### 4.9 周期任务计数一致性实现(v1.2)
+
+> [!IMPORTANT]
+> 对应协议 [§8.5.1](./opendota_protocol_spec.md#851-周期任务执行双-ack-execution_begin--execution_end)。车端 SQLite 崩溃或迁移重装时 `currentExecutionCount` 可能丢失或回退;云端必须作为**权威计数器**抵御这种数据回退。
+
+#### 4.9.1 幂等 upsert
+
+Spring Boot 收到 `execution_begin` 时:
+
+```java
+@Transactional
+public void onExecutionBegin(ExecutionBeginPayload p, String tenantId) {
+    // 幂等插入 task_execution_log
+    jdbc.update("""
+        INSERT INTO task_execution_log
+            (task_id, tenant_id, vin, execution_seq, trigger_time, begin_msg_id, begin_reported_at)
+        VALUES (?, ?, ?, ?, ?, ?, now())
+        ON CONFLICT (task_id, vin, execution_seq) DO NOTHING
+        """, p.taskId(), tenantId, p.vin(), p.executionSeq(),
+             Timestamp.from(Instant.ofEpochMilli(p.triggerAt())),
+             p.msgId());
+
+    // 计数只升不降 -- 关键约束
+    jdbc.update("""
+        UPDATE task_dispatch_record
+        SET current_execution_count = GREATEST(current_execution_count, ?),
+            last_reported_at = now()
+        WHERE task_id = ? AND vin = ?
+        """, p.executionSeq(), p.taskId(), p.vin());
+}
+```
+
+#### 4.9.2 孤儿 execution_begin 对账
+
+`execution_begin` 后若 `maxExecutionMs × 3` 内未收到 `execution_end`,cron 作业补齐:
+
+```java
+@Scheduled(fixedDelay = 60000)
+public void reconcileStaleExecutions() {
+    jdbc.update("""
+        UPDATE task_execution_log
+        SET overall_status = 2,
+            end_reported_at = now(),
+            result_payload = jsonb_build_object('reason', 'EXECUTION_TIMEOUT')
+        WHERE end_reported_at IS NULL
+          AND begin_reported_at < now() - INTERVAL '1 hour'
+        """);
+}
+```
+
+指标:`dota_execution_reconcile_total{ reason="TIMEOUT" }`,突增告警。
+
+### 4.10 车端时钟信任模型实现(v1.2)
+
+对应协议 [§17](./opendota_protocol_spec.md#17-车端时钟信任模型v12)。
+
+#### 4.10.1 Spring Bean 划分
+
+```
+opendota-task/
+ └── clock/
+      ├── TimeSyncController.java          -- REST: GET /api/time/authoritative (返回权威时间)
+      ├── TimeSyncMqttHandler.java         -- 订阅 dota/v1/resp/time/+, 处理 time_sync_response
+      ├── VehicleClockTrustService.java    -- 读写 vehicle_clock_trust, 计算 trust_status
+      └── ClockDegradationGuard.java       -- 拦截器: 检查 trust_status 决定是否执行定时任务
+```
+
+#### 4.10.2 漂移判定核心逻辑
+
+```java
+public TrustStatus evaluate(String vin, long vehicleRtcAtMs, long rttEstimateMs) {
+    long cloudNow = Instant.now().toEpochMilli();
+    long oneWayLatencyMs = rttEstimateMs / 2;
+    long driftMs = vehicleRtcAtMs - (cloudNow - oneWayLatencyMs);
+    long absDrift = Math.abs(driftMs);
+    long maxDrift = clockConfig.getMaxDriftMs();  // 默认 60000
+
+    TrustStatus status;
+    if (absDrift <= maxDrift) {
+        status = TrustStatus.TRUSTED;
+    } else if (absDrift <= 3 * maxDrift) {
+        status = TrustStatus.DRIFTING;
+    } else {
+        status = TrustStatus.UNTRUSTED;
+    }
+    repo.upsertClockTrust(vin, vehicleRtcAtMs, driftMs, status);
+    return status;
+}
+```
+
+#### 4.10.3 定时任务挂起钩子
+
+`TaskScheduler` 在 dispatch 定时任务前先查 `vehicle_clock_trust`:
+
+```java
+if (clockTrustService.getStatus(vin) == TrustStatus.UNTRUSTED
+        && task.scheduleMode() == ScheduleMode.TIMED) {
+    // 不下发,直接标记 dispatch_record
+    dispatchRepo.markDeferred(task.taskId(), vin, "CLOCK_UNTRUSTED");
+    alertService.warn("task %s on %s deferred due to untrusted clock", task.taskId(), vin);
+    return;
+}
+```
+
+周期任务仍可下发(车端基于单调时钟执行)。
+
 ---
 
 ## 5. 后端工程结构设计
@@ -945,7 +1191,15 @@ public enum DiagAction {
     TASK_ACK("task_ack"),                 // v1.1 新增:任务接收确认(含幂等)
 
     // 条件任务事件
-    CONDITION_FIRED("condition_fired");   // v1.1 新增:条件触发命中
+    CONDITION_FIRED("condition_fired"),   // v1.1 新增:条件触发命中
+
+    // v1.2 新增: 周期任务执行双 ack (§8.5.1)
+    EXECUTION_BEGIN("execution_begin"),
+    EXECUTION_END("execution_end"),
+
+    // v1.2 新增: 车端时钟信任模型 (§17)
+    TIME_SYNC_REQUEST("time_sync_request"),
+    TIME_SYNC_RESPONSE("time_sync_response");
 
     @JsonValue
     private final String value;
@@ -1175,22 +1429,26 @@ CREATE INDEX idx_task_target_task ON task_target(task_id);
 #### 任务分发记录表 (`task_dispatch_record`)
 
 ```sql
+-- v1.2: ecu_scope 新增(协议 §10.2);dispatch_status 扩充 superseding
 CREATE TABLE task_dispatch_record (
     id                BIGSERIAL PRIMARY KEY,
     task_id           VARCHAR(64) NOT NULL REFERENCES task_definition(task_id),
     tenant_id         VARCHAR(64) NOT NULL,
     vin               VARCHAR(17) NOT NULL,
-    dispatch_status   VARCHAR(32) DEFAULT 'pending_online',
-                      -- pending_online/dispatched/queued/scheduling/executing/
-                      --   paused/deferred/completed/failed/canceled/expired
+    ecu_scope         JSONB,                                -- v1.2: ECU 名数组,如 ["VCU","BMS"]
+    dispatch_status   VARCHAR(32) DEFAULT 'pending_online'
+        CHECK (dispatch_status IN (
+            'pending_online','dispatched','queued','scheduling','executing',
+            'paused','deferred','superseding',
+            'completed','failed','canceled','expired')),
     dispatched_at     TIMESTAMP,
     completed_at      TIMESTAMP,
     result_payload    JSONB,
     retry_count       INT DEFAULT 0,
-    last_error        VARCHAR(128),                      -- 最近一次失败原因
-    superseded_by     VARCHAR(64),                       -- 被哪个新 taskId 替换
-    current_execution_count INT DEFAULT 0,               -- 车端已执行次数(周期任务同步)
-    last_reported_at  TIMESTAMP,                         -- 最近一次车端上报
+    last_error        VARCHAR(128),                         -- 最近一次失败原因
+    superseded_by     VARCHAR(64),                          -- 被哪个新 taskId 替换
+    current_execution_count INT DEFAULT 0,                  -- v1.2: 云端以 GREATEST(旧, 车端 executionSeq) 更新
+    last_reported_at  TIMESTAMP,                            -- 最近一次车端上报
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (task_id, vin)
 );
@@ -1199,6 +1457,7 @@ CREATE INDEX idx_dispatch_task_vin ON task_dispatch_record(task_id, vin);
 CREATE INDEX idx_dispatch_status ON task_dispatch_record(dispatch_status);
 CREATE INDEX idx_dispatch_vin_pending ON task_dispatch_record(vin, dispatch_status)
     WHERE dispatch_status = 'pending_online';
+CREATE INDEX idx_dispatch_ecu_scope ON task_dispatch_record USING GIN (ecu_scope);
 ```
 
 #### 任务分发候补表 (`task_dispatch_pending_backlog`)
@@ -1224,6 +1483,7 @@ CREATE INDEX idx_backlog_replay ON task_dispatch_pending_backlog(vin, retry_afte
 #### 任务执行日志表 (`task_execution_log`)
 
 ```sql
+-- v1.2: 新增 begin/end 双 ack 列,支持周期计数一致性(协议 §8.5.1)
 CREATE TABLE task_execution_log (
     id                BIGSERIAL PRIMARY KEY,
     task_id           VARCHAR(64) NOT NULL REFERENCES task_definition(task_id),
@@ -1235,12 +1495,60 @@ CREATE TABLE task_execution_log (
     result_payload    JSONB,
     execution_duration INT,
     miss_compensation JSONB,                             -- 若本次为 miss 补偿,携带合并的触发时间列表(协议 §10.7.4)
+    begin_reported_at TIMESTAMP,                         -- v1.2: execution_begin 到达时间
+    end_reported_at   TIMESTAMP,                         -- v1.2: execution_end 到达时间
+    begin_msg_id      VARCHAR(64),                       -- v1.2: execution_begin 报文 msgId
+    end_msg_id        VARCHAR(64),                       -- v1.2: execution_end 报文 msgId
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (task_id, vin, execution_seq)
+    UNIQUE (task_id, vin, execution_seq)                 -- 幂等锚点, ON CONFLICT DO NOTHING
 );
 
 CREATE INDEX idx_exec_log_task_vin ON task_execution_log(task_id, vin, execution_seq);
 CREATE INDEX idx_exec_log_tenant_time ON task_execution_log(tenant_id, created_at DESC);
+CREATE INDEX idx_exec_log_pending_end ON task_execution_log(task_id, vin)
+    WHERE end_reported_at IS NULL;                       -- 找出 begin 后超时未 end 的执行
+```
+
+#### 聚合报文分片表 (`task_result_chunk`) — v1.2
+
+对应协议 [§8.5.2](./opendota_protocol_spec.md#852-聚合报文分片协议)。车端离线累积 `schedule_resp` 超过 200KB 时拆包上报,云端以 `aggregation_id` 重组。
+
+```sql
+CREATE TABLE task_result_chunk (
+    id                BIGSERIAL PRIMARY KEY,
+    aggregation_id    VARCHAR(64) NOT NULL,
+    tenant_id         VARCHAR(64) NOT NULL,
+    vin               VARCHAR(17) NOT NULL,
+    task_id           VARCHAR(64) NOT NULL REFERENCES task_definition(task_id),
+    chunk_seq         INT NOT NULL,
+    chunk_total       INT NOT NULL,
+    payload           JSONB NOT NULL,
+    truncated         BOOLEAN DEFAULT FALSE,
+    dropped_count     INT DEFAULT 0,
+    received_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (aggregation_id, chunk_seq)
+);
+CREATE INDEX idx_chunk_agg_id ON task_result_chunk(aggregation_id, chunk_seq);
+CREATE INDEX idx_chunk_task_vin ON task_result_chunk(task_id, vin, received_at DESC);
+```
+
+#### 车端时钟信任表 (`vehicle_clock_trust`) — v1.2
+
+对应协议 [§17](./opendota_protocol_spec.md#17-车端时钟信任模型v12)。车端每 24h 或启动时上报 `time_sync_response`,云端比对后更新此表。
+
+```sql
+CREATE TABLE vehicle_clock_trust (
+    vin               VARCHAR(17) PRIMARY KEY,
+    tenant_id         VARCHAR(64) NOT NULL,
+    last_sync_at      TIMESTAMP,
+    drift_ms          BIGINT,
+    trust_status      VARCHAR(16) DEFAULT 'unknown'
+        CHECK (trust_status IN ('trusted','drifting','untrusted','unknown')),
+    max_drift_ms      BIGINT DEFAULT 60000,
+    last_sync_msg_id  VARCHAR(64),
+    updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX idx_clock_trust_status ON vehicle_clock_trust(trust_status, last_sync_at);
 ```
 
 #### 通道事件日志表 (`channel_event_log`)
@@ -1353,6 +1661,11 @@ SELECT add_retention_policy('sse_event', INTERVAL '30 days');
 
 > [!CAUTION]
 > 此表使用**独立 DB 账号 append-only**,业务账号无 DELETE 权限。物理隔离存储账号。
+> **v1.2 新增 WORM 加固**(详见协议 [§15.2.1](./opendota_protocol_spec.md#1521-wormwrite-once-read-many与灾备v12)):
+> 1. **独立 tablespace**:`CREATE TABLESPACE ts_audit LOCATION '/pgdata/audit'; ALTER TABLE security_audit_log SET TABLESPACE ts_audit;`
+> 2. **Append-only trigger**:`BEFORE UPDATE OR DELETE OR TRUNCATE` 触发器抛 EXCEPTION,业务 DB 账号即使被攻破也无法篡改。
+> 3. **冷归档 WORM**:> 90 天的数据搬到 S3 Object Lock(Compliance 模式,Retention=3 年),跨区复制 RPO ≤ 5 分钟。
+> 4. DBA 启用样板见 `sql/init_opendota.sql` 第 8 节(默认注释,按环境打开)。
 
 ```sql
 CREATE TABLE security_audit_log (
