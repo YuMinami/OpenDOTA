@@ -40,5 +40,14 @@ opendota:
     mock-max-latency-ms: 500
     vehicles: []
   mqtt:
+    # 云端 MQTT 总开关。单测可用 @TestPropertySource(properties="opendota.mqtt.enabled=false") 关闭
+    enabled: ${OPENDOTA_MQTT_ENABLED:true}
     broker-url: ${OPENDOTA_MQTT_BROKER_URL:tcp://localhost:1883}
-    topic-prefix: dota/v1
+    topic-prefix: ${OPENDOTA_MQTT_TOPIC_PREFIX:dota/v1}
+    client-id-prefix: ${OPENDOTA_MQTT_CLIENT_ID_PREFIX:opendota-cloud}
+    username: ${OPENDOTA_MQTT_USERNAME:opendota-cloud}
+    password: ${OPENDOTA_MQTT_PASSWORD:opendota-cloud}
+    default-qos: 1
+    keep-alive-seconds: 60
+    connection-timeout-seconds: 10
+    clean-session: false

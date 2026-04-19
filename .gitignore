@@ -1,0 +1,163 @@
+# ============================================================
+# OpenDOTA .gitignore
+# ------------------------------------------------------------
+# 覆盖:Java/Maven 构建产物、Spring Boot 重打包残留、IDE 配置、
+#      OS 临时文件、密钥与环境变量、前端构建产物(Phase 9 前置)、
+#      本地工具与日志。
+#
+# 原则:
+#   - 只排除"本地生成"和"敏感"内容;源码、配置、文档一律保留
+#   - 不使用 `*.jar` 全局禁追,避免意外屏蔽某些 third-party 离线 jar
+#     (如需要可后续显式 `!path/to/lib.jar` 白名单放行)
+#   - mvnw 相关 wrapper 保留(当前未使用,为未来接入保留兼容)
+# ============================================================
+
+
+# -------------------- Maven / Java 构建 --------------------
+target/
+build/
+out/
+bin/
+dependency-reduced-pom.xml
+release.properties
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+buildNumber.properties
+.mvn/timing.properties
+.mvn/wrapper/maven-wrapper.jar
+
+*.class
+*.war
+*.ear
+*.nar
+hs_err_pid*
+replay_pid*
+
+
+# -------------------- IDE: IntelliJ IDEA --------------------
+.idea/
+*.iml
+*.iws
+*.ipr
+
+
+# -------------------- IDE: Eclipse / Spring STS --------------------
+.project
+.classpath
+.settings/
+.metadata/
+.factorypath
+.apt_generated/
+.apt_generated_test/
+local.properties
+bin/
+tmp/
+
+
+# -------------------- IDE: VS Code --------------------
+.vscode/
+.history/
+
+
+# -------------------- IDE: NetBeans --------------------
+nbproject/private/
+nbbuild/
+nbdist/
+.nb-gradle/
+
+
+# -------------------- 操作系统临时文件 --------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.tmp
+*.bak
+*.swp
+*~
+*~.nib
+
+
+# -------------------- 日志 --------------------
+*.log
+logs/
+log/
+
+
+# -------------------- Spring Boot --------------------
+HELP.md
+*.original
+application-local.yml
+application-local.properties
+
+
+# -------------------- 密钥 / 环境变量 --------------------
+# 本地 .env 系列禁止入库,避免误传 DB/MQTT 密码
+.env
+.env.local
+.env.*.local
+
+# mTLS / 签名密钥 —— 放在 src/**/resources 下的 demo 证书除外
+*.pem
+*.key
+*.keystore
+*.p12
+*.jks
+!**/src/**/resources/**/*.pem
+!**/src/**/resources/**/*.key
+!**/src/**/resources/**/*.keystore
+!**/src/**/resources/**/*.p12
+!**/src/**/resources/**/*.jks
+secrets/
+.secrets/
+
+
+# -------------------- 前端(Phase 9 预留) --------------------
+node_modules/
+dist/
+.vite/
+.next/
+.nuxt/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+
+# -------------------- Python 工具(模拟器辅助脚本) --------------------
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+
+# -------------------- Docker / 部署 --------------------
+# 忽略本地 compose override,正式配置入库
+docker-compose.override.yml
+docker-compose.override.yaml
+.docker/
+
+
+# -------------------- 测试产物 --------------------
+*.exec
+.surefire-*
+jacoco.exec
+reports/
+
+
+# -------------------- Claude / AI 工具本地态 --------------------
+.claude/local/
+.claude/memory/
+CLAUDE.local.md
