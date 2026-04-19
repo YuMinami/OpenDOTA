@@ -1,0 +1,9 @@
+com/opendota/simulator/SimulatorProperties.class
+com/opendota/simulator/SimulatorAutoConfiguration.class
+com/opendota/OpenDotaApplication.class
+com/opendota/simulator/MqttVehicleSimulator.class
+com/opendota/simulator/SimulatorProperties$VehicleProfile.class
+com/opendota/simulator/SimulatorLifecycle.class
+com/opendota/simulator/MqttVehicleSimulator$1.class
+com/opendota/simulator/DoipMockServer.class
+com/opendota/simulator/CanMockResponder.class

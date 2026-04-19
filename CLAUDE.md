@@ -9,8 +9,11 @@ OpenDOTA (车云通讯诊断平台) is a remote vehicle diagnostics platform: a 
 Always treat these docs as the source of truth before proposing designs:
 - `doc/opendota_protocol_spec.md` — MQTT topics, message envelope, `act` types, macro system, resource arbitration, queue control
 - `doc/opendota_tech_architecture.md` — tech stack, module layout, DB schema, async pipeline, MVP roadmap
-- `doc/design_review.md` — gap analysis flagging what's intentionally still missing (multi-ECU scripts, task mgmt system, diagnostic-vs-task mutex, etc.)
-- `sql/init_opendota.sql` — PostgreSQL DDL + mock data (ODX vehicle/ECU/service/param-codec tables + `diag_record`)
+- `doc/opendota_rest_api_spec.md` — REST API contract (auth, errors, task CRUD, SSE, ODX)
+- `doc/opendota_vehicle_agent_spec.md` — vehicle-side Agent spec (startup handshake, SQLite schema, listener substrate, macros, degrade matrix)
+- `doc/opendota_deployment_spec.md` — deployment topology, docker-compose, Kafka/PG/EMQX sizing, version upgrade matrix
+- `doc/design_review.md` — gap analysis flagging what's intentionally still missing or recently closed
+- `sql/init_opendota.sql` — PostgreSQL DDL + mock data
 
 ## Build & run
 
@@ -27,9 +30,12 @@ mvn -pl opendota-mqtt test -Dtest=FooTest  # single test class
 
 Runtime listens on `http://localhost:8080`; smoke endpoint is `GET /api/hello`.
 
-> **Spring Boot version caveat** (from `opendota-server/pom.xml:7-8`): the parent is pinned to `4.0.0-SNAPSHOT`, which may not resolve from public repos. If `mvn clean install` fails to find the parent, temporarily downgrade to the latest `3.4.x` rather than hunting for snapshots — this is the documented workaround.
+**Version baseline** (see `opendota-server/pom.xml`):
+- Spring Boot **3.4.2** (GA, Maven Central resolvable)
+- Java **21 LTS** — virtual threads are GA, `--enable-preview` is **not** needed
+- Jakarta EE 10
 
-Java 25 with `--enable-preview` is **required** (enforced in the parent POM via `maven.compiler.enablePreview=true` and compiler `-parameters`). Virtual threads are enabled globally in `application.yml` (`spring.threads.virtual.enabled: true`) — do not disable this; it's a load-bearing selection documented in architecture §1.2.
+When Spring Boot 4.0 GA (Java 25 + Jakarta EE 11) ships and stabilizes, the upgrade path is tracked in `doc/opendota_deployment_spec.md`. Virtual threads are enabled globally in `application.yml` (`spring.threads.virtual.enabled: true`) — do not disable this; it's load-bearing for the async diagnostic pipeline (architecture §1.2).
 
 ## Module topology
 
@@ -37,20 +43,31 @@ Maven multi-module, all under `com.opendota.*`. Dependency graph (arrow = "depen
 
 ```
 opendota-app ──► opendota-diag ──► opendota-common
-            └──► opendota-admin    opendota-mqtt ──► opendota-common
-                                   opendota-odx  ──► opendota-common
-                 opendota-diag ──► opendota-mqtt, opendota-odx
-                 opendota-admin ──► opendota-common
+            ├──► opendota-admin
+            ├──► opendota-task
+            ├──► opendota-security
+            └──► opendota-observability
+
+opendota-mqtt ──► opendota-common
+opendota-odx  ──► opendota-common
+opendota-diag ──► opendota-mqtt, opendota-odx
+opendota-task ──► opendota-mqtt, opendota-diag, opendota-common
+opendota-admin ──► opendota-common
+opendota-security ──► opendota-common
+opendota-observability ──► opendota-common
 ```
 
 - `opendota-common` — envelope DTOs (`DiagMessage<T>` record), `DiagAction` enum, hex/UDS utilities. No Spring beans.
 - `opendota-mqtt` — Eclipse Paho publisher/subscriber. Owns the wire; knows nothing about ODX.
 - `opendota-odx` — ODX importer, encoder (intent→hex), decoder (hex→human-readable). Pure DB-driven; no XML parsing at runtime.
-- `opendota-diag` — REST controllers, SSE emitters, `DiagDispatcher`, `ChannelManager`, `TaskManager`. This is where business flows live.
-- `opendota-admin` — ODX upload, vehicle/ECU CRUD.
+- `opendota-diag` — REST controllers, SSE emitters, `DiagDispatcher`, `ChannelManager`. Single-shot / batch / script dispatch lives here.
+- `opendota-task` — task CRUD, Kafka dispatch worker, vehicle-lifecycle consumer, pending-backlog replay, per-ECU lock arbiter.
+- `opendota-security` — mTLS validation, RBAC (`@rbac.canExecute`), tenant context, Maker-Checker approval, envelope signing.
+- `opendota-observability` — MDC injection, OTEL propagation, SSE event writer unified into `sse_event`, SLI metrics.
+- `opendota-admin` — ODX upload, vehicle/ECU CRUD, audit export.
 - `opendota-app` — `@SpringBootApplication` + `application.yml`. The only module with `spring-boot-maven-plugin`.
 
-The architecture doc (§5.1) also anticipates an `opendota-task` module for the task management system — it's not yet created, so add it as a new sibling module (update root `<modules>` + parent POM `dependencyManagement`) rather than shoving task code into `opendota-diag`.
+The architecture doc (§5.1) defines `opendota-task`, `opendota-security`, `opendota-observability` as mandatory sibling modules. If they don't yet exist in `<modules>`, add them (update root `<modules>` + parent POM `dependencyManagement`) rather than shoving code into `opendota-diag`.
 
 ## The one architectural pattern to internalize
 

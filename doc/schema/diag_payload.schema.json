@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://opendota/schema/diag_payload.schema.json",
+  "title": "OpenDOTA diagPayload canonical schema",
+  "description": "任务系统的 diag_payload 统一 schema。协议 §8.2 schedule_set、§9.2 script_cmd、REST §6.1 POST /task、车端规范 §3.1 task.diag_payload 均引用本文件作为唯一来源。payloadHash 按 RFC 8785 JCS 计算(见 payload_hash_canonicalization.md)。",
+  "oneOf": [
+    { "$ref": "#/$defs/BatchDiagPayload" },
+    { "$ref": "#/$defs/ScriptDiagPayload" }
+  ],
+  "$defs": {
+    "HexString": {
+      "type": "string",
+      "pattern": "^0[xX][0-9a-fA-F]+$",
+      "description": "UDS 寻址 / 数据的十六进制字符串,统一使用小写 0x 前缀和小写 a-f。canonical 算法会强制 lowercase。"
+    },
+    "Transport": {
+      "type": "string",
+      "enum": ["UDS_ON_CAN", "UDS_ON_DOIP"]
+    },
+    "DoipConfig": {
+      "type": "object",
+      "required": ["ecuIp"],
+      "properties": {
+        "ecuIp": { "type": "string", "format": "ipv4" },
+        "ecuPort": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 13400 },
+        "activationType": { "$ref": "#/$defs/HexString", "default": "0x00" },
+        "workstationId": { "type": ["string", "null"], "description": "DoIP 工位场景使用,见协议 §10.8" }
+      },
+      "additionalProperties": false
+    },
+    "Step": {
+      "type": "object",
+      "required": ["seqId", "type"],
+      "properties": {
+        "seqId": { "type": "integer", "minimum": 1 },
+        "type": {
+          "type": "string",
+          "enum": ["raw_uds", "macro_security", "macro_routine_wait", "macro_data_transfer"]
+        },
+        "data": { "type": "string", "description": "raw_uds 时的 UDS PDU hex,如 \"220101\"(小写)" },
+        "timeoutMs": { "type": "integer", "minimum": 100, "default": 3000 },
+        "macroParams": {
+          "type": "object",
+          "description": "宏参数,结构随 type 变化,见协议 §7。canonical 时按键字典序序列化。"
+        }
+      },
+      "additionalProperties": false
+    },
+    "EcuBlock": {
+      "type": "object",
+      "required": ["ecuName", "ecuScope", "txId", "rxId", "steps"],
+      "properties": {
+        "ecuName": { "type": "string", "minLength": 1 },
+        "ecuScope": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "uniqueItems": true,
+          "description": "本 ECU 子任务锁定集合。canonical 时必须按字典序升序排序后再 hash。"
+        },
+        "transport": { "$ref": "#/$defs/Transport", "default": "UDS_ON_CAN" },
+        "txId": { "$ref": "#/$defs/HexString" },
+        "rxId": { "$ref": "#/$defs/HexString" },
+        "doipConfig": { "$ref": "#/$defs/DoipConfig" },
+        "strategy": { "type": "integer", "enum": [0, 1], "default": 1 },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/Step" }, "minItems": 1 }
+      },
+      "additionalProperties": false
+    },
+    "BatchDiagPayload": {
+      "type": "object",
+      "description": "payload_type = batch:单 ECU 多步骤(对应 batch_cmd / schedule_set 顶层)",
+      "required": ["payloadType", "ecuName", "ecuScope", "txId", "rxId", "steps"],
+      "properties": {
+        "payloadType": { "const": "batch" },
+        "ecuName": { "type": "string", "minLength": 1 },
+        "ecuScope": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "transport": { "$ref": "#/$defs/Transport", "default": "UDS_ON_CAN" },
+        "txId": { "$ref": "#/$defs/HexString" },
+        "rxId": { "$ref": "#/$defs/HexString" },
+        "doipConfig": { "$ref": "#/$defs/DoipConfig" },
+        "strategy": { "type": "integer", "enum": [0, 1], "default": 1 },
+        "steps": { "type": "array", "items": { "$ref": "#/$defs/Step" }, "minItems": 1 }
+      },
+      "additionalProperties": false
+    },
+    "ScriptDiagPayload": {
+      "type": "object",
+      "description": "payload_type = script:多 ECU 编排(对应 script_cmd)",
+      "required": ["payloadType", "scriptId", "executionMode", "globalTimeoutMs", "ecus"],
+      "properties": {
+        "payloadType": { "const": "script" },
+        "scriptId": { "type": "string", "minLength": 1 },
+        "executionMode": { "type": "string", "enum": ["parallel", "sequential"] },
+        "globalTimeoutMs": { "type": "integer", "minimum": 1000 },
+        "priority": { "type": "integer", "minimum": 0, "maximum": 9, "default": 5 },
+        "ecus": { "type": "array", "items": { "$ref": "#/$defs/EcuBlock" }, "minItems": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

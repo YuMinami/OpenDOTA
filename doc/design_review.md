@@ -584,3 +584,144 @@ sequenceDiagram
 
 > **历史原文(v1.0 审阅结论,保留作为演进参照):**
 > **核心结论**:当前两份文档定义了一个优秀的「远程诊断仪」,但离你目标的「远程诊断 + 批量任务调度平台」还差一个完整的**任务管理系统层**。建议新增一份独立文档 `opendota_task_system_spec.md`,专门定义任务管理系统的协议与架构,然后在现有两份文档中增加互斥机制和多 ECU 编排的补充章节。
+
+---
+
+## 八、v1.3 独立审阅闭环(2026-04-19)
+
+v1.2 自评 95% 可编码,但独立审阅挖出 4 项 P0 阻塞、6 项 P1 隐患。本次一次性闭环,目标让开发第一天就不踩坑。
+
+### 8.1 P0 阻塞项闭环
+
+| # | 问题 | 处置 | 产物位置 |
+|:-:|:-----|:-----|:--------|
+| P0-1 | Maven 模块缺失(task/security/observability) | 新增 3 个模块 pom.xml + 包骨架;父 pom.xml `<modules>` 与 `<dependencyManagement>` 注册;opendota-app 依赖聚合;清理 "Spring Boot 4.x" 废弃注释 | `opendota-server/opendota-{task,security,observability}/` + `opendota-server/pom.xml` |
+| P0-2 | payloadHash canonicalization 算法未定义 | 采用 **RFC 8785 JCS** + OpenDOTA 业务预处理(hex 小写 / ecuScope 字典序 / 默认值展开 / null 语义) | `doc/schema/payload_hash_canonicalization.md` |
+| P0-3 | diagPayload 字段三处规范不统一 | 出统一 JSON Schema(batch + script 两种 payloadType),协议 §8.2 / §9.2 / REST §6.1 / 车端 §3.1 均以此为 SSOT | `doc/schema/diag_payload.schema.json` |
+| P0-4 | Flyway 迁移未拆分 | 拆 `V1__baseline_v1_2.sql`(DDL + RLS)+ `R__mock_seed.sql`(mock 数据,prod 禁用) | `opendota-app/src/main/resources/db/migration/` |
+
+### 8.2 P1 生产级隐患闭环
+
+| # | 问题 | 处置 | 产物位置 |
+|:-:|:-----|:-----|:--------|
+| P1-5 | `preemptPolicy=wait` 云端 pending 未持久化,多节点不一致 | 新增 `diag_channel_pending` 表 + ChannelPendingService(rejected 落库 / channel_ready FOR UPDATE SKIP LOCKED replay / 3min 超时) | 架构 §4.3.2 + `V2__diag_channel_pending.sql` |
+| P1-6 | Redis Pub/Sub 故障时 SSE 链路永久丢事件 | `RedisHealthProbe` 探活 + 降级到 `FallbackSseScanner` 500ms 扫 sse_event | 架构 §3.2.1.2 |
+| P1-7 | Outbox 实现方案未选型 | 决策**自研 Relay**(Spring @Scheduled + FOR UPDATE SKIP LOCKED + 指数退避);代码骨架落地 | 架构 §3.3.1.1 |
+| P1-8 | `channel_open.ecuScope` 推导逻辑缺失 | 新增 `GET /vehicle/{vin}/ecu-scope` + `odx_ecu.gateway_chain` JSONB 列存网关依赖链 | REST §4.1.1 + `V3__odx_ecu_gateway_chain.sql` |
+| P1-9 | `current_execution_count` 并发回退风险 | PG BEFORE UPDATE 触发器强制单调不减,`task_definition.version` 同理 | `V4__execution_count_monotonic.sql` |
+| P1-10 | Kafka header 规范未定义 | 6 个必备 header(tenant-id / trace-id / msg-id / operator-id / event-type / schema-version)+ RecordInterceptor | 架构 §6.3.3 |
+| P1-11 | 车端 Agent 实现技术栈未定 | 决策 **Rust**;crate 清单 / workspace 划分 / 构建流程 / 目标平台 | 车端规范 §0 |
+
+### 8.3 v1.3 后剩余待办(非阻塞)
+
+以下是继续迭代时可补,但不影响 Phase 0-2 编码推进:
+
+- 前端 React 详细设计(Phase 5 启动前补)
+- 条件任务监听基座性能量化(车端联调时基准测试得出)
+- `schedule_resp` 聚合分片丢失的车端重发策略(Phase 4 后期)
+- 操作员离职迁移 × force 抢占的交互语义(运营场景边界)
+- `task_result_chunk` 的 TTL/GC 定时作业(Phase 6 观测期)
+
+### 8.4 Flyway 迁移链一览
+
+开发第一天直接 `mvn spring-boot:run` 会按顺序执行:
+
+```
+V1__baseline_v1_2.sql               # v1.2 全量 DDL + RLS
+V2__diag_channel_pending.sql        # P1-5
+V3__odx_ecu_gateway_chain.sql       # P1-8
+V4__execution_count_monotonic.sql   # P1-9
+R__mock_seed.sql                    # dev/staging mock 数据(Repeatable)
+```
+
+新增迁移从 `V5__` 起按时间顺序累加;任何对现有表的结构变更走新 V 文件,不修改已发布的 V1-V4。
+
+---
+
+> [!IMPORTANT]
+> **v1.3 闭环结论**:四项 P0 + 六项 P1 全部落地文档与代码骨架。当前状态下 Phase 0 基础设施筹备可即刻启动,Phase 1-2 开发路径无结构性阻塞。真正的决策成本从"方案设计"变成了"参照文档按图施工"。
+
+---
+
+## 九、v1.4 编码启动前二次审阅闭环(2026-04-19)
+
+在 Phase 0 启动前做一次"生产级代码开发"视角的再扫描,识别出 10 处语义盲点 + 3 处架构风险,全部一次性消化。本次审阅把 v1.3 的**"按图施工"**推进到**"代码可直接落盘,无业务歧义"**。
+
+### 9.1 P0 产品/架构决策(通过 AskUserQuestion 已确认)
+
+| # | 决策项 | 选择 | 落地位置 |
+|:-:|:---|:---|:---|
+| A1/B2 | 批量下发 SLO 与分桶 jitter 数学冲突 | **分层 SLO + 条件 jitter**:在线车立即下发不走 jitter;仅 `pending_online → connected` 的 replay 分桶 | 架构 §4.4.4(`DispatchSource` 枚举)+ REST §6.1 `dispatchMode` 分层 SLO |
+| A2 | 不可中断宏的取消策略 | **一律拒绝**,无 admin 强制开关,`code=40305` | 协议 §12.4 / §12.4.1;REST §3.2 错误码 |
+| A3 | `targetScope` 快照 vs 动态 | **双模式可选**:`snapshot`(默认) / `dynamic`(仅 periodic/conditional) | SQL V7 `task_target.mode` + 架构 §4.4.4.1 `DynamicTargetScopeWorker` + REST §6.1 |
+| B1 | 车端 Rust Agent 阻塞云端联调 | **Phase 0 起 Java 模拟器**,Rust Agent 独立节奏推进 | opendota-app `com.opendota.simulator` 包(本次新增) |
+
+### 9.2 P1 业界最佳实践补全(不需要用户拍板)
+
+| # | 问题 | v1.4 处置 | 落地位置 |
+|:-:|:---|:---|:---|
+| A4 | `GET /vehicle/{vin}/queue` 同步/异步语义缺失 | 加 `wait` / `freshnessMs` / `waitTimeoutMs` 三参数;默认异步,SSE 推送更新;明确 `source` / `staleMs` 字段 | REST §7.1 |
+| A5 | pending 通道取消端点未在 REST 规范 | 新增 `POST /diag/channel/pending/{channelId}/cancel`,前端 `useEffect` cleanup 调用 | REST §4.2.1 |
+| A6 | `executeValidFrom` 默认值空白 | 默认等于 `validFrom`;`executeValidFrom < validFrom` 时 `code=41011` | 协议 §8.2.5;REST §6.1;REST §3.2 |
+| A7 | 车端 `maxQueueSize=100` 统计口径模糊 | 明确计入 `{queued, scheduling, executing, deferred}`,**不**计 `paused`;额外设 `maxPausedTasks=50` | 车端 Spec §11.1 |
+| A8 | `condition_signal_catalog` 无 `tenant_id`,跨 OEM 共车型会泄漏 | 加 `tenant_id` 列 + NOT NULL + RLS 策略;唯一键改为 4 元 | SQL V6 迁移 |
+| A9 | 操作员停用时活跃 `DIAG_SESSION` 悬挂 | `disableOperator()` 7 步流程:关活跃通道、取消 pending、revoke JWT、任务 fallback system | 架构 §4.4.4.2 |
+| A10 | KL15 → ON 瞬间命中 vs MQTT 未连的时序 | 车端 `condition_pending_upload` 本地缓冲表,握手后按 `fired_at` 顺序补发;`fired_at` 不回溯 | 协议 §8.3.7;车端 Spec §6.4 |
+| B3 | `V1__baseline_v1_2.sql` 单体 25KB | 不拆 V1(保持已有不可变),所有新变更走新 V 文件;本次新增 V5/V6/V7 | `opendota-app/src/main/resources/db/migration/` |
+
+### 9.3 本次新增/变更的文件清单
+
+**协议规范** (`doc/opendota_protocol_spec.md`):
+- §8.2.5 补"开始侧默认值"子段 + `code=41011`
+- §8.3.7 新增"启动期(MQTT 未连上)条件命中处理"
+- §12.4 重写"车端行为"为分支表 + 不可中断规则
+- §12.4.1 新增"不可中断任务的取消策略"
+
+**架构文档** (`doc/opendota_tech_architecture.md`):
+- §4.4.4 重写为 `DispatchSource` 枚举版(A1/B2 条件 jitter)
+- §4.4.4.1 新增 `DynamicTargetScopeWorker`(A3)
+- §4.4.4.2 新增操作员停用流程(A9)
+
+**REST 规范** (`doc/opendota_rest_api_spec.md`):
+- §3.2 新增错误码 `40305` / `41011` / `41012`
+- §4.2.1 新增 `POST /diag/channel/pending/{channelId}/cancel`
+- §6.1 `POST /task` 补 `targetScope.mode` + `dispatchMode` 分层 SLO 响应字段
+- §7.1 `GET /vehicle/{vin}/queue` 重写为同步/异步双模式
+
+**车端规范** (`doc/opendota_vehicle_agent_spec.md`):
+- §6.4 新增"启动期命中缓冲"
+- §11.1 明确 `queueSize` 计数语义 + `maxPausedTasks=50`
+
+**SQL 迁移** (`opendota-server/opendota-app/src/main/resources/db/migration/`):
+- `V5__outbox_event.sql`(架构 §3.3.1 Outbox Pattern 建表补齐)
+- `V6__signal_catalog_tenant.sql`(A8 租户切片 + RLS)
+- `V7__task_target_mode.sql`(A3 双模式 + DynamicTargetScopeWorker 数据源)
+
+**后端代码骨架** (`opendota-server/opendota-app/src/main/java/com/opendota/simulator/`):
+- Java MQTT 车端模拟器(CAN + DoIP 双栈,B1 Phase 0 解除联调阻塞)
+- `@ConditionalOnProperty(opendota.simulator.enabled)` 保护,默认关
+
+### 9.4 仍未闭环的 v1.4 剩余项(非阻塞)
+
+以下是 v1.4 识别但留到后续 Phase 处理的:
+
+| 主题 | 现状 | 何时闭环 |
+|:---|:---|:---|
+| Rust Agent 真车端实现 | 骨架规范齐全,代码未起 | Phase 2 后期由车端团队独立推进;Java 模拟器覆盖到 E2E 联调 |
+| 前端 React 详细设计 | 架构 §7 骨架 | Phase 5 启动前补 |
+| `task_result_chunk` TTL/GC | 架构写了,作业未实现 | Phase 6 观测期 |
+| 条件任务监听基座性能量化 | 车端 Spec §6 描述清晰 | 车端联调阶段基准测试 |
+| V1 单体迁移拆分 | 不拆,保持不可变 | 如果 Phase 1 迭代中发现 V1 有 bug,走 repair-migration 而非修改 V1 |
+
+### 9.5 v1.4 结论
+
+**13 项审阅结果**:10 项 P1(A1-A10) + 3 项架构风险(B1-B3)全部消化完毕,文档 + 数据库迁移 + 后端 Java 模拟器骨架同步提交。按 v1.4 基线:
+
+- **Phase 0 可立即开始**:docker-compose up + mvn spring-boot:run(含内嵌模拟器)= 端到端 MQTT → SSE 链路 demo
+- **Phase 1 开发对齐**:REST API 契约 + Flyway 迁移已冻结,前后端可基于 v1.4 并行 codegen
+- **Phase 2 联调不阻塞**:Java 模拟器就位,无需等 Rust Agent
+- **SLO 数学正确**:在线 <10s / 批量 <30-60s / 离线 replay <30s 同时可达成
+
+v1.4 标志着文档从"方案设计"完全过渡到"生产编码蓝图"。下一次审阅的触发条件是 **Phase 1 PR 第一批合入时**,针对实现与文档偏差做第三次同步。
+
+---

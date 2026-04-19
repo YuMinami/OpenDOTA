@@ -116,6 +116,7 @@ graph TB
 | **V2C** ↑ | 周期执行边界 | `dota/v1/event/execution/{vin}` | 1 | **v1.2** 周期/条件任务单次执行 `execution_begin` / `execution_end` 边界上报 |
 | **C2V** ↓ | 时钟校准下发 | `dota/v1/cmd/time/{vin}` | 1 | **v1.2** `time_sync_request` |
 | **V2C** ↑ | 时钟校准响应 | `dota/v1/resp/time/{vin}` | 1 | **v1.2** `time_sync_response`,含车端 RTC 及漂移上报 |
+| **C2V** ↓ | 信号白名单推送 | `dota/v1/cmd/signal-catalog/{vin}` | 1 | **v1.2** `signal_catalog_push` OTA 下发白名单 |
 
 ### 2.3 QoS 策略
 
@@ -210,6 +211,8 @@ graph TB
 | `execution_end` | V2C | **v1.2** 周期/条件任务单次执行完成上报,回填结果;与 `execution_begin` 同 `executionSeq`,`ON CONFLICT DO NOTHING` 幂等合并 |
 | `time_sync_request` | C2V | **v1.2** 云端主动时钟校准下发(见 [§17](#17-车端时钟信任模型)) |
 | `time_sync_response` | V2C | **v1.2** 车端响应云端时钟校准,或车端启动/每 24h 主动上报本地 RTC;云端计算漂移更新 `vehicle_clock_trust` |
+| `signal_catalog_push` | C2V | **v1.2 R4** 云端推送新版信号白名单(含预签名 URL + SHA-256),见 [§8.3.2.1](#8321-signal_catalog_push-推送协议) |
+| `signal_catalog_ack` | V2C | **v1.2 R4** 车端确认白名单下载与生效 |
 
 ---
 
@@ -563,6 +566,7 @@ sequenceDiagram
 | `taskId` | string | ✅ | 批次任务全局唯一标识 |
 | `priority` | int | ❌ | 任务优先级（0-9，0=最高，9=最低）。默认 5。在线诊断仪隐含 `priority=0` |
 | `ecuName` | string | ✅ | 目标 ECU 逻辑名称 |
+| `ecuScope` | string[] | ✅ | **v1.2 必填**。本任务锁定的 ECU 集合(单 ECU 场景等于 `[ecuName]`;跨网关读 ECU 时必须包含 `["GW","BMS"]` 等)。与 [§10.2](#102-车端资源状态机) 的 per-ECU 互斥协议对齐。云端 API 层在构造报文时按 ODX 依赖图自动推导,缺失时车端返回 `queue_reject { reason:"ECU_SCOPE_REQUIRED" }` |
 | `transport` | string (enum) | ❌ | 传输层协议类型，默认 `UDS_ON_CAN`。可选值：`UDS_ON_CAN` / `UDS_ON_DOIP`。详见 [4.5 节](#45-传输层适配策略) |
 | `txId` / `rxId` | string (hex) | ✅ | UDS 源/目标寻址标识。CAN 模式下为 Arbitration ID；DoIP 模式下为 Logical Address |
 | `doipConfig` | object | 条件 | `transport=UDS_ON_DOIP` 时必填，结构同 `channel_open`。详见 [4.2 节](#42-通道开启-channel_open) |
@@ -821,6 +825,7 @@ DoIP 基于 TCP 流式传输，UDS PDU 由 DoIP Generic Header（含 `payload le
       }
     },
     "ecuName": "BMS",
+    "ecuScope": ["BMS"],
     "transport": "UDS_ON_CAN",
     "txId": "0x7E3",
     "rxId": "0x7EB",
@@ -844,7 +849,9 @@ DoIP 基于 TCP 流式传输，UDS PDU 由 DoIP Generic Header（含 `payload le
 ```
 
 > [!NOTE]
-> `schedule_set` 同样支持 `transport` 和 `doipConfig` 字段，语义与 `channel_open` / `batch_cmd` 完全一致。详见 [4.5 节](#45-传输层适配策略)。
+> `schedule_set` 同样支持 `transport` 和 `doipConfig` 字段,语义与 `channel_open` / `batch_cmd` 完全一致。详见 [4.5 节](#45-传输层适配策略)。
+>
+> **ecuScope 必填规则(v1.2 R2 对齐)**:`schedule_set` 的 `payload` 顶层(或 `diagPayload.ecuScope` 字段)**必须**携带 `ecuScope`,与 `batch_cmd` / `script_cmd` 保持一致。缺失时车端返回 `queue_reject { reason:"ECU_SCOPE_REQUIRED" }`,不会进入调度器。
 
 #### `scheduleCondition` 字段说明
 
@@ -938,6 +945,9 @@ DoIP 基于 TCP 流式传输，UDS PDU 由 DoIP Generic Header（含 `payload le
 >
 > 两者同时命中时,记录最早命中的原因(通常是 validWindow)作为任务终态。
 
+**v1.2 R3 云端校验**:`maxExecutions = -1`(无限)且 `executeValidUntil = NULL` 的组合会创建永远不终止的任务。云端 API 层必须在 `POST /task` 时拒绝此类请求(`code=41001`),且 `task_definition` 表级 CHECK 约束兜底(详见 `sql/init_opendota.sql` 的 `task_definition` 建表)。**仅 `schedule_type=once` / `timed` 例外**——这两类由 `executeAt`/`executeAtList` 隐含上界。
+
+
 #### 8.2.5 `validUntil` 与 `validWindow` 的层次关系
 
 OpenDOTA 存在两个时间窗口,分别属于**云端分发**和**车端执行**两个不同层次:
@@ -954,6 +964,16 @@ OpenDOTA 存在两个时间窗口,分别属于**云端分发**和**车端执行*
 3. **云端下发时**:API 层对新建任务默认填充 `validWindow.endTime = valid_until + 7*24h`,运营可在 UI 上单独调整。
 4. 云端 `valid_until` 已过但 `validWindow.endTime` 未到 → 已下发的车可继续执行;未下发的车不再下发。
 5. `valid_until` 和 `validWindow.endTime` 都有关联的 `_start` 字段,遵循相同的"云端窗口 ⊆ 车端窗口"原则。
+
+**开始侧默认值**(v1.4 A6 明确):
+
+| 场景 | 默认 | 理由 |
+|:---|:---|:---|
+| `validFrom` 省略 | `now()`(创建时刻) | 任务立即可下发 |
+| `executeValidFrom` 省略 | **`validFrom`**(与云端下发起始同步) | 避免"已下发到车端但车端本地窗口未到,先被车端拒绝"的尴尬 |
+| `validWindow.startTime` 省略 | `executeValidFrom` 的毫秒值 | `schedule_set` 下发时由 API 层组装 |
+
+**云端 API 校验**:`executeValidFrom < validFrom` 直接 `code=41011 execute_window_before_dispatch_window`。这种配置在语义上没有意义(车端能执行的时间早于云端开始下发),大概率是运营误填。
 
 ### 8.3 条件任务运行时与监听基座
 
@@ -1009,6 +1029,79 @@ OpenDOTA 存在两个时间窗口,分别属于**云端分发**和**车端执行*
 | 车端更高 | 正常入队(向前兼容,车端新版本的白名单一定是老版本的超集) |
 
 云端 `task_definition.schedule_config.signalCatalogVersion` 应在运营保存任务时固化为当时的最新版本号,后续白名单迭代不会让历史任务失效。
+
+#### 8.3.2.1 `signal_catalog_push` 推送协议(v1.2 R4)
+
+> [!IMPORTANT]
+> 当 OEM 在管理后台发布新版 `signal_catalog.json` 时,**云端必须主动把新白名单推送到所有在线车辆**,而不是等条件任务到达后被动触发 `SIGNAL_CATALOG_STALE` 拒绝。这样新创建的条件任务才能立即被车端接受。
+
+**云端 → 车端** Topic: `dota/v1/cmd/signal-catalog/{vin}`
+
+```json
+{
+  "msgId": "pub-catalog-v8-001",
+  "act": "signal_catalog_push",
+  "payload": {
+    "modelCode": "CHERY_EXEED",
+    "newVersion": 8,
+    "previousVersion": 7,
+    "catalogUrl": "https://oss.example.com/catalog/chery_exeed_v8.json?Expires=...&Signature=...",
+    "catalogSha256": "d4b1c3...",
+    "catalogSize": 24576,
+    "replaceMode": "gradual",
+    "retainPreviousDays": 7,
+    "mandatoryBy": 1713904800000
+  }
+}
+```
+
+| 字段 | 类型 | 必填 | 说明 |
+|:---|:---:|:---:|:---|
+| `newVersion` | int | ✅ | 新白名单版本号,严格递增 |
+| `previousVersion` | int | ✅ | 期望车端当前持有的版本号;不匹配时车端仍接受下载,但在 `signal_catalog_ack` 中声明 `localPreviousVersion` |
+| `catalogUrl` | string | ✅ | 预签名 URL,有效期 ≤ 15 分钟(同 `macro_data_transfer`) |
+| `catalogSha256` | string | ✅ | SHA-256 整文件校验 |
+| `catalogSize` | int | ✅ | 字节数,下载前预检磁盘 |
+| `replaceMode` | string (enum) | ❌ | `immediate` 立即替换旧版 \| `gradual`(默认) 新老并存 `retainPreviousDays`,期间条件任务按各自 `signalCatalogVersion` 命中对应版本 |
+| `retainPreviousDays` | int | ❌ | `replaceMode=gradual` 时生效,默认 7 天 |
+| `mandatoryBy` | int64 | ❌ | 强制切换时刻;到达时无论是否用完 retain 期都丢弃旧版,保障合规截止 |
+
+**车端流程**:
+
+1. 校验 `catalogUrl` 预签名格式,磁盘空间足够
+2. 下载 → SHA-256 校验
+3. 写入 `signal_catalog` SQLite 表,新记录的 `version=newVersion`
+4. 根据 `replaceMode` 决定是否立即删除旧版(默认保留)
+5. 上报 `signal_catalog_ack`
+
+**车端 → 云端** Topic: `dota/v1/ack/{vin}`
+
+```json
+{
+  "act": "signal_catalog_ack",
+  "payload": {
+    "originalMsgId": "pub-catalog-v8-001",
+    "status": "accepted",
+    "activeVersion": 8,
+    "localPreviousVersion": 7,
+    "retainedVersions": [7],
+    "appliedAt": 1713300000000
+  }
+}
+```
+
+`status` 枚举:
+
+| 值 | 含义 |
+|:---|:---|
+| `accepted` | 下载 + 校验 + 写入成功,新版生效 |
+| `download_failed` | URL 过期 / 网络错误 / SHA-256 不符 |
+| `disk_full` | 磁盘空间不足 |
+| `duplicate_ignored` | 车端已持有 `newVersion`,无需重复处理 |
+| `version_regressed` | `newVersion <= activeVersion`,车端拒绝降级 |
+
+**云端 `task_dispatch_record` 联动**:`signal_catalog_ack.status=accepted` 后,挂在 `pending_backlog` 且 `reject_reason=SIGNAL_CATALOG_STALE` 的条件任务立即 replay。
+
 
 #### 8.3.3 监听基座与诊断仪互斥关系
 
@@ -1106,6 +1199,73 @@ Topic: `dota/v1/event/condition/{vin}`
 
 > [!NOTE]
 > `condition_fired` 只是"命中通知",实际诊断结果仍然通过 `schedule_resp` 上报。云端 UI 可用两者组合显示"触发了 → 正在执行 → 执行完成"的三段式进度。
+
+#### 8.3.7 启动期(MQTT 未连上)条件命中处理(v1.4 A10)
+
+> [!CAUTION]
+> 车辆 KL15 → ON 瞬间,`power_on` 条件最早可以在车端 Agent 完成 MQTT CONNECT **之前**命中。若直接把 `condition_fired` 发进 MQTT 缓冲队列,有以下风险:(1) CONNECT 尚未建立 → rumqttc 缓冲满后丢弃;(2) 发送队列无序,可能与启动握手 `time_sync_response` / `task_query` 交错。
+>
+> v1.4 明确"启动期命中先写本地、握手完成后按顺序批量补发"的时序契约。
+
+**车端处理顺序**:
+
+```
+系统 KL15 = ON
+     │
+     ▼
+Agent 进程启动,加载 SQLite / 信号白名单
+     │
+     ▼
+启动监听基座(DBC / DTC passive / timer)  ←── 此时已可能命中 power_on / signal
+     │
+     ├── 命中的所有 condition_fired 事件先写入本地表 condition_pending_upload
+     │      (表结构见下方,SQLite)
+     │
+     ▼
+MQTT CONNECT (mTLS 握手)
+     │
+     ▼
+完成协议 §2 四步握手(time_sync / task_query / queue_status)
+     │
+     ▼
+批量补发 condition_pending_upload,按 fired_at 升序,每条带真实 fired_at 时间戳
+     │
+     ▼
+进入正常主循环
+```
+
+**车端本地表** `condition_pending_upload`(车端 SQLite):
+
+```sql
+CREATE TABLE condition_pending_upload (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id         TEXT NOT NULL,
+    trigger_type    TEXT NOT NULL,                -- power_on / signal / dtc / timer / geo_fence
+    trigger_snapshot TEXT NOT NULL,               -- JSON
+    action_taken    TEXT NOT NULL,                -- queued / deferred / skipped
+    execution_seq   INT,
+    fired_at        INT NOT NULL,                 -- 本地 RTC 毫秒,真实命中时刻
+    monotonic_ms    INT NOT NULL,                 -- 单调时钟毫秒,用于时钟降级时的顺序重建
+    uploaded        INT NOT NULL DEFAULT 0
+);
+CREATE INDEX idx_cpu_pending ON condition_pending_upload(fired_at) WHERE uploaded = 0;
+```
+
+**补发规则**:
+
+1. MQTT 握手完成后,按 `fired_at ASC` 批量读 `uploaded=0` 条目。
+2. 对每条发独立 `condition_fired`,`msgId` 新生成,但 `payload.firedAt` 使用**原始 `fired_at`**(不使用上报时刻)。
+3. 每条 QoS 1 ack 成功后置 `uploaded=1`。超过 24h 未上报的条目由 `conditionCatchupGc` 后台作业清理(写告警日志)。
+4. 补发期间若又有**新的**条件命中,依然遵循"先落表再补发"的串行顺序,避免乱序。
+
+**云端处理**:
+
+1. `condition_fired_log.fired_at` 用报文中的 `payload.firedAt`,不用 `created_at`。
+2. `executionSeq` 语义不变 —— 它仍是车端本地单调分配的序号;启动期命中在"baseline 对齐(§8.5.1.1)"之后才分配 `execution_begin`,因此不会与云端旧计数冲突。
+3. 若对同 `task_id + vin + execution_seq` 收到多条 `condition_fired`(网络重传),由 `condition_fired_log` 的 `UNIQUE(task_id, vin, execution_seq)` 约束幂等去重(需在 v1.4 SQL 中补此约束,见下一条迁移)。
+
+> [!IMPORTANT]
+> **时钟信任降级对补发的影响**:若 Agent 启动时 RTC 未同步(`trust_status=unknown`),`fired_at` 先用 `monotonic_ms + bootEpochMs` 估算,真正 MQTT 连上并收到 `time_sync_request` 校准后,`fired_at` **不回溯修改**(避免审计链被动改),但在 `triggerSnapshot.clockTrust="unknown_at_capture"` 里打标,云端 UI 显示提示。
 
 ### 8.4 车端调度流程
 
@@ -1219,6 +1379,33 @@ WHERE task_id = ? AND vin = ? AND execution_seq = ?;
 - `ON CONFLICT DO NOTHING`:车端重传 `execution_begin` 不会破坏已存在的记录。
 - `GREATEST(..., ?)`:车端本地回退到旧值时云端不降计数,防止本地 SQLite 损坏导致计数倒退。
 - 云端定时对账作业:`begin_reported_at` 后超过 `maxExecutionMs * 3` 仍无 `end_reported_at` 的,标记 `overall_status=2 failed`,触发告警。
+
+#### 8.5.1.1 车端启动 baseline 对齐(v1.2 R1)
+
+> [!CAUTION]
+> 车端 `executionSeq` 在 SQLite 损坏/数据迁移/厂区维修换 Agent 硬件等场景下可能从 1 重新开始。若不做 baseline 对齐,云端 `GREATEST` 保持旧值,车端上报永远 ≤ 云端 → **云端计数永远不更新,任务实际"卡死"不再推进**。
+
+**车端启动握手(详见 `opendota_vehicle_agent_spec.md` §2)必须完成以下步骤**:
+
+```
+Agent 启动
+   ↓
+MQTT CONNECT + time_sync_response(自报)
+   ↓
+发 task_query { scope:"all" }                      -- 拉取云端权威计数
+   ↓
+云端响应 queue_status,每个任务带 currentExecutionCount
+   ↓
+车端对齐:local.currentExecutionCount = MAX(local, cloud)
+   ↓
+local 与 cloud 差异时写告警日志(SQLite 可能损坏)
+   ↓
+进入正常主循环,下次 execution_begin 的 executionSeq = local.currentExecutionCount + 1
+```
+
+**云端对 `task_query` 的响应必须携带所有 `active`/`scheduling`/`executing`/`paused`/`deferred` 任务的权威 `currentExecutionCount`**,对已完成任务不响应(减少报文体积)。
+
+**握手超时处理**:15s 内云端未回 `task_query` 响应时,车端**禁止触发任何周期/条件任务的 `execution_begin`**(避免超执行风险),改按 5 分钟周期重试拉取。此期间只接受**单步/批量/脚本**类的在线诊断(无 executionSeq 语义)。
 
 #### 8.5.2 聚合报文分片协议
 
@@ -1359,6 +1546,7 @@ Topic: `dota/v1/cmd/script/{vin}`
 | 字段 | 类型 | 必填 | 说明 |
 |:---|:---:|:---:|:---|
 | `ecuName` | string | ✅ | ECU 逻辑名称 |
+| `ecuScope` | string[] | ✅ | **v1.2 必填**。该 ECU 子任务锁定的集合,单 ECU 场景等于 `[ecuName]`,跨网关读 ECU 必须带 `["GW", ...]`。所有 `ecus[n].ecuScope` 的并集会被车端一次性按字典序原子获取 |
 | `transport` | string (enum) | ❌ | 传输层协议类型，默认 `UDS_ON_CAN` |
 | `txId` / `rxId` | string (hex) | ✅ | UDS 源/目标寻址标识 |
 | `doipConfig` | object | 条件 | `transport=UDS_ON_DOIP` 时必填，结构同 `channel_open` |
@@ -1773,7 +1961,16 @@ Topic: `dota/v1/event/channel/{vin}`
 | 后台任务(周期/单次)—— 无 `workstationId` | 与所有工位竞争,参与全局锁 |
 
 > [!CAUTION]
-> `workstationId` 不是免责盾牌。**必须**由 EMQX ACL 校验:`workstationId` 必须与证书 OU 或 username 的 suffix 一致,防止诊断仪 A 伪装成 B 绕过冲突检测。配合 §15.4 RBAC 使用。
+> `workstationId` 不是免责盾牌。**必须**由 EMQX ACL 校验:`workstationId` 与证书标识强绑定,防止诊断仪 A 伪装成 B 绕过冲突检测。证书承载方式如下(v1.2 R5 修正,与 §15.1.1 统一):
+>
+> | 载体 | 约定 | 校验点 |
+> |:---|:---|:---|
+> | **Subject.CN** | `<VIN>` 保持不变 | EMQX `cert_cn_as_username=true` |
+> | **Subject.OU** | `vehicle-agent` / `cloud-broker` / `workstation-agent` 三选一 | 新增 `workstation-agent` 枚举,诊断仪用 |
+> | **SAN otherName** | `id-ce-dota-workstation = <workstationId>` (x.509 OID: `1.3.6.1.4.1.OEM-PRIVATE.workstation`) | EMQX Rule Engine 连接时提取 SAN,校验 `SAN.workstationId == channel_open.doipConfig.workstationId` |
+> | **Subject.CN 后缀约定(兼容方案)** | 若 PKI 不便扩 SAN,CN 可用 `<VIN>@<workstationId>` 格式 | 连接时解析 `@` 后段,保证与 Topic 中 VIN 去后缀后一致 |
+>
+> 不再使用 "OU 承载 workstationId" 的表述(与 §15.1.1 的 `OU=vehicle-agent` 语义冲突)。配合 §15.4 RBAC 使用。
 
 
 ---
@@ -2061,16 +2258,41 @@ Topic: `dota/v1/cmd/control/{vin}`
 | `taskId` | string | ✅ | 要取消的任务 ID |
 | `reason` | string | ❌ | 取消原因：`"MANUAL_CANCEL"` / `"EXPIRED"` / `"SUPERSEDED"` |
 
-车端行为：
-- 如果任务正在执行，立即终止并清理资源（释放 ECU 通道、停止 `3E 80` 心跳）。
-- 从本地 SQLite 中删除该任务。
-- 通过对应类型的结果 Topic 上报取消确认（`overallStatus=4`，即 CANCELED）。具体上报的 `act` 和 Topic 取决于被取消任务的原始类型：
-  - `batch_cmd` 任务 → `batch_resp`（Topic: `dota/v1/resp/batch/{vin}`）
-  - `schedule_set` 任务 → `schedule_resp`（Topic: `dota/v1/resp/batch/{vin}`）
-  - `script_cmd` 任务 → `script_resp`（Topic: `dota/v1/resp/script/{vin}`）
+车端行为（按当前任务状态分支,v1.4 加固 A2 安全规则）：
+
+| 当前任务状态 | 任务类型 | 车端动作 | 上报 |
+|:---|:---|:---|:---|
+| `queued` / `scheduling` / `paused` / `deferred` | 任意 | 从 SQLite 删除,释放占用的 ECU 锁 | `overallStatus=4` CANCELED + `reason=MANUAL_CANCEL` |
+| `executing` | `raw_uds` | 当前 UDS 请求响应到达后(或 `timeoutMs` 到期)立即终止,释放 ECU 通道、停 `3E 80` | 同上 |
+| `executing` | `macro_routine_wait`(轮询中) | 发 `31 02 XX XX` 主动停例程,收到 `71 02` 后释放 | 同上 |
+| `executing` | **`macro_security` 已发 27 XX 未完成 27 XX+1** | ❌ **拒绝取消** | `task_ack { status:"cancel_rejected", reason:"NON_INTERRUPTIBLE", safeRetryAfterMs: 15000 }` |
+| `executing` | **`macro_data_transfer` 传输中** | ❌ **拒绝取消** | `task_ack { status:"cancel_rejected", reason:"NON_INTERRUPTIBLE", currentOffset: <已写入字节数> }` |
+
+**上报 Topic 映射**(仅接受取消场景):
+- `batch_cmd` 任务 → `batch_resp`（Topic: `dota/v1/resp/batch/{vin}`）
+- `schedule_set` 任务 → `schedule_resp`（Topic: `dota/v1/resp/batch/{vin}`）
+- `script_cmd` 任务 → `script_resp`（Topic: `dota/v1/resp/script/{vin}`）
+
+#### 12.4.1 不可中断任务的取消策略(v1.4 A2)
+
+> [!CAUTION]
+> **一律拒绝**是 OpenDOTA v1.4 的安全基线,无例外。即使 `admin` / `senior_engineer` 角色,对 `macro_data_transfer` 和 `macro_security` 半程也**不允许**强制 `force_cancel` —— 理由:
+>
+> - `macro_data_transfer` 中断:ECU 当前分区处于不一致写入状态,冷启动可能 brick
+> - `macro_security` 中断(已发 seed 未发 key):ECU 返回 `NRC_36` 并触发 **10 秒(最长可达分钟级)Anti-Scan 锁定**,期间其它正常诊断全部被拒
+>
+> 操作员必须等到不可中断宏自然完成后,再发新的 `task_cancel`。云端 API 层对 admin 试图 `force_cancel` 这两类任务一律返回 `code=40305 non_interruptible_macro`,并写入审计(`action=force_cancel_attempt`)。
+
+**云端 Dispatcher 处理 `cancel_rejected` 的规则**:
+
+| 情况 | 云端动作 |
+|:---|:---|
+| 收到 `cancel_rejected { reason:"NON_INTERRUPTIBLE" }` | 不改 `task_dispatch_record.dispatch_status`,保持 `executing`;写入 `last_error = "CANCEL_BLOCKED_NON_INTERRUPTIBLE"`;推送 SSE `task-progress { status:"cancel_blocked" }` 通知前端 |
+| 前端 UI | 显示"任务 {taskId} 不可中断,预计 {safeRetryAfterMs} 毫秒后可重试";按钮置灰 |
+| `safeRetryAfterMs` 到期仍收不到 `execution_end` | 云端不自动重试取消;等任务自然结束或人工介入(可能是 ECU hang) |
 
 > [!NOTE]
-> `task_cancel` 是 `schedule_cancel` 的超集。`schedule_cancel` 仅能取消定时/周期任务，`task_cancel` 可以取消所有类型的任务（batch、schedule、script）。建议统一使用 `task_cancel`。
+> `task_cancel` 是 `schedule_cancel` 的超集。`schedule_cancel` 仅能取消定时/周期任务，`task_cancel` 可以取消所有类型的任务（batch、schedule、script）。建议统一使用 `task_cancel`。**`queue_delete` 行为与 `task_cancel` 完全一致**(同一套分支规则),只是语义上偏"队列管理"——车端实现时共用同一份代码路径。
 
 ### 12.5 任务查询 (`task_query`)
 
@@ -2814,10 +3036,11 @@ public void onVehicleOnline(VinOnlineEvent ev) {
 
 | 证书字段 | 填充值 | 说明 |
 |:---|:---|:---|
-| `Subject CN` | `<VIN>` | 17 位车架号 |
+| `Subject CN` | `<VIN>`(车端) / `<VIN>@<workstationId>`(诊断仪,可选) | 17 位车架号;诊断仪场景可加 `@workstationId` 后缀承载工位 ID |
 | `Subject O` | `<TenantId>` | 租户/主机厂标识(如 `chery-hq`) |
-| `Subject OU` | `vehicle-agent` / `cloud-broker` | 端侧类型 |
-| `Extended Key Usage` | `clientAuth` / `serverAuth` | 车端为 clientAuth,Broker 为 serverAuth |
+| `Subject OU` | `vehicle-agent` / `cloud-broker` / `workstation-agent` | 端侧类型;诊断仪用 `workstation-agent` |
+| `SAN otherName(dota-workstation)` | `<workstationId>`(可选) | DoIP 工位场景承载工位 ID 的首选位置,与 `channel_open.doipConfig.workstationId` 强绑定校验 |
+| `Extended Key Usage` | `clientAuth` / `serverAuth` | 车端/诊断仪为 clientAuth,Broker 为 serverAuth |
 | `NotAfter` | 签发 +5 年 | 配合 OTA 轮换 |
 
 **EMQX ACL 必须配置以下三条规则**(失败一条即断连):

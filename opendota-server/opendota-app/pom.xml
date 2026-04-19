@@ -19,10 +19,42 @@
             <groupId>com.opendota</groupId>
             <artifactId>opendota-admin</artifactId>
         </dependency>
+        <dependency>
+            <groupId>com.opendota</groupId>
+            <artifactId>opendota-task</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.opendota</groupId>
+            <artifactId>opendota-security</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>com.opendota</groupId>
+            <artifactId>opendota-observability</artifactId>
+        </dependency>
         <!-- Web 依赖作为整体暴露 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+        <!-- JDBC + DataSource 自动装配,供 Flyway / 任务系统使用 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+        <!-- Flyway 版本化迁移,自动扫描 classpath:db/migration -->
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-core</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.flywaydb</groupId>
+            <artifactId>flyway-database-postgresql</artifactId>
+        </dependency>
+        <!-- PostgreSQL 16 驱动 -->
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
         </dependency>
     </dependencies>
     

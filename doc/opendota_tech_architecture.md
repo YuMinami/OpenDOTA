@@ -29,24 +29,29 @@
 
 | 层级 | 技术选型 | 版本要求 | 选型理由 |
 |:---|:---|:---:|:---|
-| **语言** | Java | **25** | LTS 版本，虚拟线程（Virtual Threads）已全面成熟，性能比肩 Go 协程 |
-| **后端框架** | Spring Boot | **4.x** | 原生支持虚拟线程，Jakarta EE 10 全面升级，AOT 编译支持 |
-| **MQTT Broker** | EMQX | 5.x | 单机百万级连接，原生集群，内置 Rule Engine 和 Webhook |
-| **MQTT Client** | Eclipse Paho | 最新稳定版 | Java 生态最成熟的 MQTT Client，支持 QoS 0/1/2 |
-| **关系型数据库** | PostgreSQL | 16+ | JSONB 原生支持，适合 ODX 半结构化编解码规则存储 |
-| **时序数据库** | TimescaleDB (PG 插件) | 最新稳定版 | 无缝扩展 PG，零额外运维成本，后期用于诊断报文日志归档 |
-| **缓存与消息** | Redis | 7.x | Pub/Sub 通道实现异步结果分发，支持多节点集群广播 |
-| **前端框架** | React | 19.x | 组件化架构，生态成熟 |
-| **前端 UI 库** | Ant Design | 5.x | 企业级 UI 组件，表格/树形控件/表单完善 |
-| **前端构建** | Vite | 6.x | 极速 HMR，开发体验极佳 |
-| **API 文档** | SpringDoc (OpenAPI 3) | 最新稳定版 | 自动生成 Swagger UI，前后端联调利器 |
+| **语言** | Java | **21 LTS** | 虚拟线程(Virtual Threads)自 Java 21 GA,公版无须 `--enable-preview`;LTS 保障 5 年安全更新 |
+| **后端框架** | Spring Boot | **3.4.2 (GA)** | Maven Central 可直接解析;Spring Framework 6.2,Jakarta EE 10。SB 4.0 GA(Java 25 + Jakarta EE 11)稳定后按部署规范升级 |
+| **消息队列** | Apache Kafka | **3.8+** | 任务分发管道(`task-dispatch-queue`)、车辆生命周期事件(`vehicle-lifecycle`)、死信(`task-dispatch-dlq`)的削峰与可靠消费;EMQX Rule Engine 的 Kafka Sink 原生支持。生产环境至少 3 broker 集群 |
+| **MQTT Broker** | EMQX | **5.x** | 单机百万级连接,原生集群,内置 Rule Engine 和 Webhook |
+| **MQTT Client** | Eclipse Paho | 1.2.5+ | Java 生态最成熟的 MQTT Client,支持 QoS 0/1/2 |
+| **关系型数据库** | PostgreSQL | **16+** | JSONB 原生支持;RLS 多租户隔离;适合 ODX 半结构化编解码规则存储 |
+| **数据库迁移** | Flyway | **10.x** | 版本化 DDL 与 Mock 数据拆分(见 §6.6) |
+| **时序数据库** | TimescaleDB (PG 扩展) | 2.16+ | 无缝扩展 PG,零额外运维成本,后期用于诊断报文日志归档 |
+| **缓存与消息** | Redis | **7.x** | Pub/Sub 通道 + Redisson 分布式 Token Bucket 四级限流 + 分布式锁 |
+| **分布式限流/锁** | Redisson | 3.41+ | Redis 客户端,生产级限流与锁 |
+| **集成测试** | Testcontainers | 1.20+ | 一键起 PG/EMQX/Kafka/Redis 环境,配套符合性测试 |
+| **前端框架** | React | 19.x | 组件化架构,生态成熟 |
+| **前端 UI 库** | Ant Design | 5.x | 企业级 UI 组件,表格/树形控件/表单完善 |
+| **前端构建** | Vite | 6.x | 极速 HMR,开发体验极佳 |
+| **API 文档** | SpringDoc (OpenAPI 3) | 2.7+ | 自动生成 Swagger UI,前后端联调;OpenAPI 规范见 `doc/opendota_rest_api_spec.md` |
+| **可观测性** | Prometheus + Grafana + Jaeger + OTEL | 最新稳定版 | SLI/SLO 度量与分布式追踪,详见 §9 |
 
 ### 1.2 虚拟线程的核心价值
 
 > [!IMPORTANT]
-> 本项目选用 Java 25 虚拟线程（Project Loom）的核心原因：在车云诊断场景中，云端下发一条单步 UDS 指令后，需要阻塞等待车端通过 MQTT 异步回调返回结果（通常 1~5 秒）。传统的平台线程（Platform Thread）模型下，每一个等待中的请求都会占用一个操作系统线程（约 1MB 栈空间），100 个并发就是 100MB。而虚拟线程在 I/O 阻塞时会自动释放底层平台线程，百万级虚拟线程的内存开销仅约数十 MB。
+> 本项目选用 Java 21 LTS 虚拟线程(Project Loom)的核心原因:在车云诊断场景中,云端下发一条单步 UDS 指令后,需要阻塞等待车端通过 MQTT 异步回调返回结果(通常 1~5 秒)。传统的平台线程(Platform Thread)模型下,每一个等待中的请求都会占用一个操作系统线程(约 1MB 栈空间),100 个并发就是 100MB。而虚拟线程在 I/O 阻塞时会自动释放底层平台线程,百万级虚拟线程的内存开销仅约数十 MB。
 
-**Spring Boot 4 中启用虚拟线程**：
+**Spring Boot 中启用虚拟线程**：
 
 ```yaml
 # application.yml
@@ -56,7 +61,10 @@ spring:
       enabled: true
 ```
 
-启用后，Tomcat 会自动使用虚拟线程处理所有 HTTP 请求，无需修改任何业务代码。
+启用后,Tomcat 会自动使用虚拟线程处理所有 HTTP 请求,无需修改任何业务代码。
+
+> [!NOTE]
+> **未来升级路径**:Spring Boot 4.0 GA(预计 2026 Q2-Q3 稳定)引入 Jakarta EE 11 与 Java 25 LTS。升级评估由 `opendota_deployment_spec.md` 的"版本升级矩阵"跟踪,包含兼容性测试向量与回滚策略。
 
 ---
 
@@ -273,7 +281,235 @@ public SseEmitter subscribe(
 > [!TIP]
 > **演进路线**：当系统规模增长到需要支撑高并发、多消费者组时，可从 Redis Pub/Sub 迁移到 **Redis Stream**（`XADD` / `XREAD` / `XACK`），Redis Stream 原生支持消息持久化、消费者组和断点续读，无需再依赖 PG 回填。但 MVP 阶段 PG 回填方案已足够可靠，且零额外组件引入。
 
-### 3.3 SSE (Server-Sent Events) 设计
+#### 3.2.1.2 Redis 故障降级:`sse_event` 直接扫描模式(补 P1-6)
+
+Redis Pub/Sub 本身是**单点依赖**(即便集群,也会有连接全断的瞬间)。如果不降级,Redis 抖动期间所有 SSE 推送全部丢失,只能靠前端重连补发——但**如果用户在 Redis 恢复前一直不断线**,那些事件永远不会触发补发逻辑,永久丢失。
+
+**降级策略**(`SseEventWriter` + `RedisHealthProbe`):
+
+```java
+@Component
+public class SseEventDispatcher {
+    private final AtomicBoolean redisHealthy = new AtomicBoolean(true);
+    private final StringRedisTemplate redis;
+    private final SseEmitterManager emitters;
+    private final SseEventRepository repo;
+
+    // 正常路径:事件落库后,PUBLISH
+    public void dispatch(SseEvent event) {
+        repo.save(event); // §3.3.2 事务内已落库,这里只是安全兜底
+        if (redisHealthy.get()) {
+            try {
+                redis.convertAndSend("dota:sse:" + event.getVin(),
+                                     Map.of("id", event.getId(), "type", event.getEventType()));
+                return;
+            } catch (RedisConnectionFailureException e) {
+                redisHealthy.set(false);
+                log.warn("Redis 故障,切换到直扫 sse_event 模式", e);
+            }
+        }
+        // 降级路径:本节点直接扫表推给本地订阅者;跨节点订阅者由 FallbackSseScanner 覆盖
+        emitters.pushLocal(event.getVin(), event);
+    }
+}
+
+@Component
+public class FallbackSseScanner {
+    private long lastScannedId = 0;
+
+    // 降级期间每 500ms 扫一次全量 sse_event,推给所有本机 SSE 连接
+    @Scheduled(fixedDelay = 500)
+    public void scan() {
+        if (redisHealthy.get()) return; // 正常态不扫
+        List<SseEvent> rows = repo.findByIdGreaterThanOrderByIdAsc(lastScannedId, 500);
+        for (SseEvent e : rows) {
+            emitters.pushLocal(e.getVin(), e);
+            lastScannedId = e.getId();
+        }
+    }
+}
+
+@Component
+public class RedisHealthProbe {
+    // 每 2s ping 一次 Redis;连续 3 次成功才恢复
+    @Scheduled(fixedDelay = 2000)
+    public void probe() {
+        try {
+            redis.getConnectionFactory().getConnection().ping();
+            if (!redisHealthy.get() && ++successStreak >= 3) {
+                redisHealthy.set(true);
+                successStreak = 0;
+                log.info("Redis 恢复,停用直扫模式");
+            }
+        } catch (Exception e) {
+            redisHealthy.set(false);
+            successStreak = 0;
+        }
+    }
+}
+```
+
+**权衡**:
+
+- 降级期间每个 Spring node 独立扫 `sse_event`,因此推送延迟上限 = 500ms(可接受)
+- 扫全表会按 `id > lastScannedId` 增量,配合 `idx_sse_event_vin_id`(vin 前导)足够;如果扫描成为瓶颈,临时 fallback 到只扫近 10 秒数据
+- Redis 恢复后 PUB/SUB 自动恢复,扫描器静默退出
+- 客户端无感知:Last-Event-ID 补发逻辑在重连时依然工作
+
+此机制保证 Redis **任何级别的故障**都不会导致诊断结果永久丢失,是生产级 SSE 链路必备。
+
+### 3.3 事务边界与 Outbox 模式(v1.2 R6)
+
+> [!CAUTION]
+> 异步流水线横跨 **PostgreSQL + Kafka + Redis + MQTT Broker** 四个系统,任何一步失败都不能留下不一致状态。本节明确三大关键流程的事务边界。
+
+#### 3.3.1 任务创建流程(`POST /task`)
+
+不存在"跨 PG+Kafka 的分布式事务",必须用 **Transactional Outbox Pattern**:
+
+```
+┌─────────────────────── @Transactional (PG) ──────────────────────────┐
+│ 1. INSERT task_definition                                            │
+│ 2. INSERT N × task_dispatch_record (target_scope 解析后的每辆车)     │
+│ 3. INSERT N × outbox_event (payload=DispatchCommand, status='new')   │
+│ 4. 计算 payload_hash,校验 R3 约束                                    │
+└──────────────────────────────────────────────────────────────────────┘
+                                ↓ commit
+┌──── OutboxPublisher 后台作业 (独立事务) ───┐
+│ 5. SELECT ... FROM outbox_event WHERE status='new' FOR UPDATE SKIP LOCKED
+│ 6. Kafka producer.send(dispatch-queue, DispatchCommand)
+│ 7. 等 RecordMetadata 成功 → UPDATE outbox_event SET status='sent'
+│ 8. 失败: status 不变, 下次扫描重试
+└──────────────────────────────────────────┘
+```
+
+**outbox_event 表定义**(新增):
+
+```sql
+CREATE TABLE outbox_event (
+    id              BIGSERIAL PRIMARY KEY,
+    tenant_id       VARCHAR(64) NOT NULL,
+    aggregate_type  VARCHAR(32) NOT NULL,          -- task_definition / execution / ...
+    aggregate_id    VARCHAR(64) NOT NULL,
+    event_type      VARCHAR(64) NOT NULL,          -- DispatchCommand / TaskRevised / ...
+    payload         JSONB NOT NULL,
+    status          VARCHAR(16) DEFAULT 'new',     -- new/sent/failed
+    attempts        INT DEFAULT 0,
+    next_retry_at   TIMESTAMP,
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    sent_at         TIMESTAMP
+);
+CREATE INDEX idx_outbox_pending ON outbox_event(status, next_retry_at) WHERE status IN ('new','failed');
+```
+
+**至少一次语义**:Kafka 消费端必须幂等(用 `taskId+vin` 去重)。
+
+#### 3.3.1.1 Outbox Relay 实现选型(自研)
+
+**决策**:采用**自研 Relay Worker**,不引入 Debezium / Kafka Connect。理由:
+
+| 维度 | 自研 Relay | Debezium CDC |
+|:-----|:----------|:-------------|
+| 运维复杂度 | 无新增组件,Spring Bean 随 opendota-task 启动 | 需独立部署 Kafka Connect 集群 + 管理 publication/slot |
+| 延迟 | 100-500ms(可调轮询) | <50ms |
+| 开发成本 | ~200 行代码 | 配置 + 运维文档 + 失败恢复流程 |
+| 多租户 | 原生支持(查询加 tenant_id 过滤) | 需额外路由规则 |
+
+**Relay Worker 骨架**(`opendota-task/.../OutboxRelayWorker.java`):
+
+```java
+@Component
+@RequiredArgsConstructor
+public class OutboxRelayWorker {
+    private final JdbcTemplate jdbc;
+    private final KafkaTemplate<String, String> kafka;
+    private final ObjectMapper mapper;
+
+    // 多节点部署:FOR UPDATE SKIP LOCKED 保证同一条只被一个节点抓到
+    @Scheduled(fixedDelay = 200) // 200ms 轮询,高峰时可调 100ms
+    @Transactional
+    public void drain() {
+        List<OutboxRow> rows = jdbc.query("""
+            SELECT id, tenant_id, aggregate_type, aggregate_id, event_type, payload, attempts
+            FROM outbox_event
+            WHERE status IN ('new','failed')
+              AND (next_retry_at IS NULL OR next_retry_at <= NOW())
+            ORDER BY id
+            LIMIT 500
+            FOR UPDATE SKIP LOCKED
+            """, outboxRowMapper);
+
+        for (OutboxRow row : rows) {
+            try {
+                String topic = topicFor(row.eventType); // DispatchCommand → task-dispatch-queue
+                ProducerRecord<String, String> rec = new ProducerRecord<>(
+                    topic, row.aggregateId, row.payload);
+                rec.headers()
+                   .add("tenant-id", row.tenantId.getBytes(UTF_8))  // §6.3.2 header 规范
+                   .add("event-id", Long.toString(row.id).getBytes(UTF_8));
+                kafka.send(rec).get(5, TimeUnit.SECONDS); // 同步等 Kafka ack
+                jdbc.update("UPDATE outbox_event SET status='sent', sent_at=NOW() WHERE id=?", row.id);
+            } catch (Exception e) {
+                jdbc.update("""
+                    UPDATE outbox_event
+                    SET status='failed', attempts=attempts+1,
+                        next_retry_at = NOW() + (LEAST(attempts, 8) * INTERVAL '30 seconds')
+                    WHERE id=?
+                    """, row.id);
+                log.warn("outbox relay failed id={} attempts={}", row.id, row.attempts + 1, e);
+            }
+        }
+    }
+}
+```
+
+**关键保证**:
+
+1. **SKIP LOCKED** 让多节点并发消费同一批不冲突,无需 leader 选举
+2. **Kafka Producer idempotence**:`enable.idempotence=true` + `acks=all`,避免重复发送
+3. **指数退避**:`next_retry_at = NOW() + min(attempts, 8) × 30s`,最长 4 分钟一次,避免被卡住的事件霸占扫描窗口
+4. **GC**:已 `sent` 的记录 7 天后由 `OutboxArchiveJob` 搬到冷表,防止 `outbox_event` 膨胀
+5. **监控**:Prometheus 指标 `outbox_pending_total{status}` / `outbox_relay_latency_seconds`,`pending > 10000` 或 `latency_p99 > 5s` 触发告警
+
+#### 3.3.2 execution_begin / execution_end 处理
+
+```
+┌─────────────── @Transactional (PG) ───────────────┐
+│ 1. INSERT task_execution_log ON CONFLICT DO NOTHING
+│ 2. UPDATE task_dispatch_record SET current_execution_count = GREATEST(...)
+│ 3. INSERT sse_event (event_type='task-progress', source=task_execution_log, id=#1 的 id)
+└───────────────────────────────────────────────────┘
+             ↓ commit
+     Redis PUBLISH dota:resp:task-progress:<vin> { sseEventId, taskId, ... }
+```
+
+**Redis PUB 在事务外**——PG 事务提交后再发 Pub/Sub。如果 Redis 发送失败,SSE 断线补发从 `sse_event` 表回填,保证最终一致。
+
+#### 3.3.3 task_result_chunk 重组
+
+```
+Kafka consumer receives aggregated_chunked message
+             ↓
+┌────────── @Transactional (PG) ──────────┐
+│ 1. INSERT task_result_chunk ON CONFLICT DO NOTHING
+│ 2. SELECT count(*) WHERE aggregation_id=?
+│ 3. 若 count == chunk_total:
+│      a. SELECT * ORDER BY chunk_seq
+│      b. INSERT task_execution_log (merged result)
+│      c. DELETE FROM task_result_chunk WHERE aggregation_id=?
+│ 4. Kafka ack.acknowledge()  (事务后,失败会 re-deliver)
+└────────────────────────────────────────┘
+```
+
+**关键规则**:
+
+- 永远不做 "写 PG 后再写 Kafka / MQTT"——用 outbox pattern
+- 永远不做 "写 Kafka 后再写 PG"——用 idempotent consumer
+- Redis Pub/Sub 始终是"PG 事务提交后的最后一步",失败不影响正确性(只影响实时性,由补发兜底)
+
+---
+
+### 3.4 SSE (Server-Sent Events) 设计
 
 > [!TIP]
 > 选择 SSE 而非 WebSocket 的原因：本场景为典型的**单向推送**（Server → Client），SSE 直接复用 HTTP 协议，无需心跳保活，React 端用原生 `EventSource` 几行代码即可接入，开发维护成本远低于 WebSocket。
@@ -427,6 +663,71 @@ graph TB
 | 2 < new ≤ 5 | 任意 | 任意 | ❌ 不自动抢占,正常排队 |
 | 任意 | 任意 | 任意(需跨越上表边界) | 必须显式 `force=true` 并校验角色 |
 
+#### 4.3.2 preemptPolicy=wait 云端持久化(补 P1-5)
+
+当 `channel_open { preemptPolicy: "wait" }` 被车端拒绝(`channel_event rejected`),云端必须把 pending 通道请求持久化,等 `channel_ready` 到达再 replay。**不能仅靠内存状态**——请求端 Spring node 与收到 `channel_ready` 的节点通常不是同一台。
+
+**新增表** `diag_channel_pending`(写入 `V2__diag_channel_pending.sql` 迁移):
+
+```sql
+CREATE TABLE diag_channel_pending (
+    id               BIGSERIAL PRIMARY KEY,
+    channel_id       VARCHAR(64) NOT NULL UNIQUE,     -- 原始 channel_open 的 channelId
+    tenant_id        VARCHAR(64) NOT NULL,
+    vin              VARCHAR(17) NOT NULL,
+    ecu_scope        JSONB NOT NULL,
+    operator_id      VARCHAR(64) NOT NULL,
+    original_request JSONB NOT NULL,                   -- 原始 channel_open payload,用于 replay
+    rejected_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    conflict_task_id VARCHAR(64),                      -- 拒绝时占用 ECU 的任务 ID
+    expires_at       TIMESTAMP NOT NULL,               -- rejected_at + 3min
+    status           VARCHAR(16) DEFAULT 'waiting'
+        CHECK (status IN ('waiting','replayed','timeout','canceled')),
+    replayed_at      TIMESTAMP,
+    sse_client_id    VARCHAR(64)                        -- 前端 SSE 订阅者,replay 后定向推送
+);
+CREATE INDEX idx_dcp_vin_status ON diag_channel_pending(vin, status)
+    WHERE status = 'waiting';
+CREATE INDEX idx_dcp_expires ON diag_channel_pending(expires_at)
+    WHERE status = 'waiting';
+ALTER TABLE diag_channel_pending ENABLE ROW LEVEL SECURITY;
+CREATE POLICY rls_tenant_dcp ON diag_channel_pending
+    USING (tenant_id = current_setting('app.tenant_id', true));
+```
+
+**三条生命周期路径**(`ChannelPendingService`):
+
+```
+rejected 路径          channel_ready 路径              超时路径
+───────────────        ──────────────────             ──────
+RejectedListener       ChannelReadyListener            PendingTimeoutSweeper
+  ↓                       ↓ (MQTT dota/v1/event/        ↓ (每 30s)
+INSERT diag_           channel/{vin})                  SELECT ... WHERE
+channel_pending        ↓                               expires_at < NOW()
+  status=waiting       SELECT ... FOR UPDATE SKIP      AND status='waiting'
+  expires_at=          LOCKED WHERE vin=? AND            ↓
+  rejected_at+3min     status='waiting' ORDER BY         UPDATE status='timeout'
+  ↓                    priority, rejected_at             ↓
+SSE emit               LIMIT 1                           SSE emit 'channel-
+'channel-rejected'       ↓                              timeout' 通知前端
+with retryAt           若有 → 重发原始 channel_open       "车端长期繁忙"
+                       到 MQTT;UPDATE status=
+                       'replayed', replayed_at=NOW()
+                         ↓
+                       SSE emit 'channel-ready' +
+                       自动 replay 成功提示
+```
+
+**关键保证**:
+
+- **多节点一致**:`FOR UPDATE SKIP LOCKED` 保证同一 `channel_ready` 只被一个 Spring node 处理,避免重复 replay
+- **优先级排队**:同一 VIN 若有多个 pending,按 `original_request.priority` 升序 replay(低 priority 诊断仪请求先复活,避免饿死)
+- **幂等 replay**:replay 使用原 `channelId`,车端收到后先查本地 `task/channel` 表,若已开通则静默忽略(协议 §4.2 二次 `channel_open` 行为)
+- **超时 3 分钟**:与协议 §10.7.2 `wait` 的 3 分钟对齐,到期推 SSE `channel-timeout` 让前端提示用户
+- **前端可取消**:`POST /diag/channel/pending/{channelId}/cancel` 将 `status` 置 `canceled`,避免用户关闭页面后还在后台等着抢占
+
+此设计闭环了协议 §10.7.2 `wait` 语义,SSE/REST/持久化三层联动,Phase 2 末即可交付。
+
 **实现要点**(Java 伪代码):
 
 ```java
@@ -529,9 +830,16 @@ public class DispatchRateLimiter {
 | **失败重试** | DispatchWorker 未 commit offset 触发 re-deliver | 指数退避:1s → 2s → 4s → 8s → 16s,超过 5 次转死信 |
 | **死信处理** | 独立 topic `task-dispatch-dlq` + 告警 | 运维介入,分析失败原因后手动 retry |
 
-#### 4.4.4 分桶 Jitter 惊群防护(v1.2)
+#### 4.4.4 分桶 Jitter 惊群防护(v1.2 + v1.4 A1/B2 修正)
 
-对应协议 [§13.9](./opendota_protocol_spec.md#139-大规模车辆惊群防护v12)。大停车场清晨上电场景:单靠 Token Bucket 不够,下行 publish 仍是集中爆发。加入 hash 分桶 + random jitter:
+对应协议 [§13.9](./opendota_protocol_spec.md#139-大规模车辆惊群防护v12)。大停车场清晨上电场景:单靠 Token Bucket 不够,下行 publish 仍是集中爆发。加入 hash 分桶 + random jitter。
+
+> [!IMPORTANT]
+> **v1.4 关键修正**:jitter **仅作用于"离线→上线"的 pending_online → dispatched replay 路径**,不影响:
+> - 在线车辆的首次任务下发(dispatchMode ∈ {single_immediate, batch_eager})
+> - `channel_open` 等在线诊断仪实时操作
+>
+> 这是 `dota_offline_task_push_latency P95 < 10s`(SLO 定位为"**单车上线首个任务**")与 `jitterMaxMs=30000`(惊群防护)并存的数学前提。见 `rest_api_spec §6.1 dispatchMode` 分层 SLO 表。
 
 ```java
 @Component
@@ -541,16 +849,192 @@ public class TaskDispatchScheduler {
     @Value("${opendota.dispatch.jitter-max-ms:30000}")
     private long jitterMaxMs;         // 30s 窗口错峰
 
-    public void scheduleReplay(String vin, Runnable task) {
-        int bucket = Math.abs(vin.hashCode()) % bucketCount;
-        long base = bucket * (jitterMaxMs / bucketCount);
-        long jitter = ThreadLocalRandom.current().nextLong(0, jitterMaxMs / bucketCount);
-        scheduler.schedule(task, base + jitter, MILLISECONDS);
+    /**
+     * v1.4:区分在线立即下发和离线 replay 两条路径
+     *
+     * @param vin 车辆
+     * @param task 要执行的下发动作
+     * @param source "online_immediate" | "offline_replay" | "batch_throttled"
+     */
+    public void schedule(String vin, Runnable task, DispatchSource source) {
+        switch (source) {
+            case ONLINE_IMMEDIATE, BATCH_EAGER_ONLINE ->
+                scheduler.execute(task);   // 不延迟,立即执行
+            case OFFLINE_REPLAY, BATCH_THROTTLED -> {
+                int bucket = Math.abs(vin.hashCode()) % bucketCount;
+                long base = bucket * (jitterMaxMs / bucketCount);
+                long jitter = ThreadLocalRandom.current().nextLong(0, jitterMaxMs / bucketCount);
+                scheduler.schedule(task, base + jitter, MILLISECONDS);
+            }
+        }
+    }
+
+    public enum DispatchSource {
+        ONLINE_IMMEDIATE,       // 在线车首次下发或 channel_open
+        BATCH_EAGER_ONLINE,     // 100-10000 批量的在线车即时下发
+        OFFLINE_REPLAY,         // client.connected 触发的 pending_online replay(走 jitter)
+        BATCH_THROTTLED         // >10000 批量的全员削峰(走 jitter)
     }
 }
 ```
 
-**Prometheus 监控**:`dota_dispatch_bucket_queue_depth{bucket="$n"}`;任一桶超过 200 深度时告警,说明分桶算法或阈值需要调整。
+**调用点检查清单**(实现时需审查):
+
+| 调用来源 | 正确的 `DispatchSource` |
+|:---|:---|
+| `POST /task` + 在线车解析 | `ONLINE_IMMEDIATE` 或 `BATCH_EAGER_ONLINE`(按 totalTargets) |
+| `POST /diag/channel/open` | `ONLINE_IMMEDIATE`(强制) |
+| `OnlineEventConsumer`(vehicle-lifecycle connected) | `OFFLINE_REPLAY` |
+| `POST /task` + 目标 > 10000 | `BATCH_THROTTLED`(全部) |
+| `DynamicTargetScopeWorker` 补发新车 | `OFFLINE_REPLAY`(新车大概率刚上线) |
+
+**Prometheus 监控**:
+- `dota_online_dispatch_latency_seconds`(SLO P95 < 10s)
+- `dota_batch_dispatch_latency_seconds`(SLO P95 < 30s / 60s 按 dispatchMode 分桶)
+- `dota_offline_replay_latency_seconds`(SLO P95 < 30s)
+- `dota_dispatch_bucket_queue_depth{bucket="$n"}` 任一桶 > 200 告警
+
+#### 4.4.4.1 DynamicTargetScopeWorker(v1.4 A3)
+
+> [!IMPORTANT]
+> `targetScope.mode = 'dynamic'` 的任务需要在后台周期扫描,为新匹配的 VIN 补发 `task_dispatch_record`。本 Worker 是实现这一语义的核心组件。
+
+```java
+@Component
+@RequiredArgsConstructor
+public class DynamicTargetScopeWorker {
+
+    private final JdbcTemplate jdbc;
+    private final TaskDispatchService dispatchService;
+    private final OutboxRelayWorker outbox;
+
+    // 每小时扫描一次;高峰可调 30 分钟,或改为车辆注册事件驱动
+    @Scheduled(cron = "${opendota.dynamic-scope.cron:0 5 * * * ?}")
+    @Transactional
+    public void resolve() {
+        // 1. 拉出所有 mode=dynamic 且关联任务处于活跃态的 task_target
+        List<TaskTargetRow> targets = jdbc.query("""
+            SELECT tt.id, tt.task_id, tt.target_type, tt.target_value, tt.dynamic_last_resolved_at,
+                   td.tenant_id, td.valid_until
+            FROM task_target tt
+            JOIN task_definition td ON td.task_id = tt.task_id
+            WHERE tt.mode = 'dynamic'
+              AND td.status = 'active'
+              AND td.valid_until > now()
+            FOR UPDATE SKIP LOCKED
+            """, targetRowMapper);
+
+        for (TaskTargetRow t : targets) {
+            try {
+                TenantContext.set(t.tenantId());
+                // 2. 按 target_type 解析当前时刻的全量匹配 VIN
+                Set<String> currentMatches = resolveTargetScope(t.targetType(), t.targetValue());
+
+                // 3. 减去已有 task_dispatch_record
+                Set<String> existing = jdbc.queryForList(
+                    "SELECT vin FROM task_dispatch_record WHERE task_id = ?",
+                    String.class, t.taskId()).stream().collect(toSet());
+
+                Set<String> newcomers = Sets.difference(currentMatches, existing);
+
+                // 4. 为新车补发 dispatch_record + outbox_event(OFFLINE_REPLAY 路径,走 jitter)
+                for (String vin : newcomers) {
+                    dispatchService.createPendingDispatchRecord(t.taskId(), vin);
+                    // 新增 outbox 事件,Relay 异步投递到 task-dispatch-queue
+                    dispatchService.enqueueDispatchEvent(t.taskId(), vin,
+                        DispatchSource.OFFLINE_REPLAY);
+                }
+
+                // 5. 更新扫描锚点
+                jdbc.update("""
+                    UPDATE task_target
+                    SET dynamic_last_resolved_at = now(),
+                        dynamic_resolution_count = dynamic_resolution_count + 1
+                    WHERE id = ?
+                    """, t.id());
+
+                log.info("dynamic target resolved: task_id={} newcomers={}",
+                    t.taskId(), newcomers.size());
+                metrics.counter("dota_dynamic_target_newcomers_total",
+                    "task_id", t.taskId()).increment(newcomers.size());
+            } catch (Exception e) {
+                log.error("dynamic target resolve failed: task_id={}", t.taskId(), e);
+                // 单个失败不影响其它,下次重试;SKIP LOCKED 保证其它 Spring 节点不会阻塞
+            } finally {
+                TenantContext.clear();
+            }
+        }
+    }
+}
+```
+
+**关键保证**:
+- `FOR UPDATE SKIP LOCKED`:多节点并发安全,一行只被一个 Worker 抓到
+- 任务进入终态(`completed/expired/canceled`)立即停止扫描(WHERE 条件过滤)
+- `dynamic_resolution_count` 监控 Worker 是否卡住(Prometheus `dota_dynamic_scope_worker_last_run_timestamp`)
+- 新车补发的 dispatch 走 `OFFLINE_REPLAY` 路径,默认 jitter 错峰(新车投产高峰场景,100 辆同日出厂不会瞬间触发)
+
+#### 4.4.4.2 操作员停用 × 活跃通道处理(v1.4 A9)
+
+> [!CAUTION]
+> 场景:工程师张三持有 `DIAG_SESSION` 通道 `ch-001` 正在读 BMS 数据,此时 HR 系统通过 `PUT /admin/operator/{id}/disable` 禁用他的账号。通道必须立即安全关闭,否则:(1) 前端 SSE 继续推送结果到已注销用户的浏览器;(2) 占用的 ECU 锁无人释放,后续高优先级任务一直被 deferred。
+
+**停用流程**:
+
+```java
+@Transactional
+public void disableOperator(String operatorId, String disabledBy, String reason) {
+    // 1. 查询该 operator 当前持有的活跃通道
+    List<String> activeChannels = jdbc.queryForList("""
+        SELECT channel_id FROM channel_event_log
+        WHERE operator_id = ?
+          AND event = 'opened'
+          AND channel_id NOT IN (
+              SELECT channel_id FROM channel_event_log
+              WHERE event IN ('closed', 'idle_timeout', 'ecu_lost', 'preempted')
+          )
+        """, String.class, operatorId);
+
+    // 2. 以 system operator 身份下发 channel_close(resetSession=true) 到车端
+    for (String channelId : activeChannels) {
+        DiagMessage<ChannelClosePayload> env = envelopeBuilder.buildAsSystem(
+            vin, DiagAction.CHANNEL_CLOSE,
+            new ChannelClosePayload(channelId, true),
+            tenantContext.current(),
+            "operator_disabled:" + operatorId
+        );
+        mqttPublisher.publish(env);
+
+        // 3. 写入 channel_event_log,event=force_closed_operator_disabled,reason=DISABLE
+        log.warn("Force-closing channel {} due to operator {} disabled by {}",
+            channelId, operatorId, disabledBy);
+    }
+
+    // 4. 取消该 operator 创建的所有 diag_channel_pending(waiting 态)
+    jdbc.update("""
+        UPDATE diag_channel_pending
+        SET status = 'canceled', replayed_at = now()
+        WHERE operator_id = ? AND status = 'waiting'
+        """, operatorId);
+
+    // 5. operator 表置 status=disabled
+    jdbc.update("""
+        UPDATE operator SET status = 'disabled', disabled_at = now()
+        WHERE id = ?
+        """, operatorId);
+
+    // 6. 作废所有未过期的 JWT(写入 Redis jti 黑名单,对应 §9 MDC/auth)
+    jwtBlacklistService.revokeAllForOperator(operatorId);
+
+    // 7. 该 operator 持有的任务分发记录(未结束)—— 按架构 §4.R10 规则 fallback 到 system
+    //    这部分已由 sql/init_opendota.sql 的 operator_snapshot 字段支持,任务下发仍有审计链
+    auditService.record("operator_disabled", operatorId, disabledBy, reason);
+}
+```
+
+**前端约定**:被停用的 operator 再次刷新页面时,API 网关返回 `code=40103` Token 撤销,前端跳登录页。正在持有 SSE 连接的浏览器在收到 `channel_event { event:"closed", reason:"operator_disabled" }` 后自动关闭当前面板并提示"账号已停用"。
+
+**审计链保留**:`channel_event_log.operator_id` **保持原值**(不改写为 system),方便事后追查"谁持有过这个通道"。
 
 #### 4.4.5 聚合报文分片消费(v1.2)
 
@@ -973,6 +1457,63 @@ if (clockTrustService.getStatus(vin) == TrustStatus.UNTRUSTED
 
 周期任务仍可下发(车端基于单调时钟执行)。
 
+### 4.11 Operator 离职后任务归属迁移(v1.2 R10)
+
+> [!IMPORTANT]
+> 合规要求 `operator` 表禁止物理删除,离职只能 `status=disabled`。但周期/条件任务仍会持续触发,若 `operator` 字段继续挂 disabled 的人员,审计链会出现"已离职人员在事后不断下发指令"的异常语义。本节规定归属迁移规则。
+
+#### 4.11.1 迁移规则
+
+当操作员 `status` 从 `active` → `disabled` 时:
+
+| 操作员创建的任务类型 | 归属迁移动作 |
+|:---|:---|
+| `once` / `timed`(未执行) | 保留原 `operator.id`;执行时若已 disabled,触发时 fallback 到 `system(tenantId)`,审计 `chain_id` 指向原创建者 |
+| `periodic`(active) | 下次触发的 `operator` 切换为 `system(tenantId)`,`ticketId` 保留原值 |
+| `conditional`(active) | 同 `periodic` |
+| 正在执行的 `batch_cmd`(非任务触发) | 不变(已在途,执行完即止) |
+| `task_definition.status=paused/completed/expired/canceled` | 不处理 |
+
+#### 4.11.2 数据库层实现
+
+方式一:Trigger(推荐,保证实时性):
+
+```sql
+CREATE OR REPLACE FUNCTION trg_operator_disabled_migrate() RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.status = 'disabled' AND OLD.status = 'active' THEN
+        -- 记录迁移事件到审计
+        INSERT INTO security_audit_log (audit_id, tenant_id, operator_id, action, resource_type, result, timestamp)
+        VALUES (gen_random_uuid()::text, NEW.tenant_id, NEW.id,
+                'operator_disabled_migration', 'operator', 'triggered', CURRENT_TIMESTAMP);
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_operator_disabled
+    AFTER UPDATE OF status ON operator
+    FOR EACH ROW EXECUTE FUNCTION trg_operator_disabled_migrate();
+```
+
+方式二:下发时运行时判定(Java):
+
+```java
+public Operator resolveDispatchOperator(TaskDefinition task) {
+    Operator creator = operatorRepo.findById(task.getCreatedBy()).orElseThrow();
+    if (creator.getStatus() == OperatorStatus.DISABLED) {
+        return Operator.system(task.getTenantId())
+            .withTicketId(task.getOriginalTicketId())
+            .withChainId(creator.getLastAuditId());   // 审计链保留原创建者
+    }
+    return creator;
+}
+```
+
+**硬性约束**:
+
+1. `Envelope.operator` 的 `id` 字段允许 `system`,车端 RBAC 校验对 `system` 放行(system 不能手动下发,只能由任务引擎触发)
+2. 审计日志 `chain_id` 必须指向原创建者的最近 `audit_id`,便于事后追溯"谁在什么工单下创建了这个周期任务"
 ---
 
 ## 5. 后端工程结构设计
@@ -1293,6 +1834,9 @@ CREATE INDEX idx_diag_record_tenant_op ON diag_record(tenant_id, operator_id, cr
 ```
 
 #### 批量任务表 (`batch_task`)
+
+> [!WARNING]
+> **v1.2 R8 弃用通知**:`batch_task` 是 v1.0 遗留表,v1.2 后所有批量/周期/脚本任务统一走 `task_definition` + `task_dispatch_record` + `task_execution_log`。新代码**禁止**插入此表。本表仅为历史数据保留,MVP 完成后的下个里程碑将迁移历史并物理删除。所有 REST API(`/diag/cmd/batch` 等)内部走 task 主流程。
 
 ```sql
 CREATE TABLE batch_task (
@@ -1711,6 +2255,132 @@ CREATE POLICY rls_task_definition ON task_definition
 
 Spring Boot 侧通过 `@Transactional` 拦截器,从 JWT 的 `tenantId` 自动设置 `SET LOCAL app.tenant_id = ?`。
 
+#### 6.3.1 HTTP 入口的 tenant_id 注入
+
+```java
+@Aspect
+@Component
+public class TenantRlsAspect {
+
+    @Around("@annotation(org.springframework.transaction.annotation.Transactional)")
+    public Object injectTenant(ProceedingJoinPoint pjp) throws Throwable {
+        String tenantId = TenantContext.current();   // 从 JWT / Kafka header 放入
+        if (tenantId != null) {
+            jdbc.execute("SET LOCAL app.tenant_id = '" + tenantId.replace("'", "''") + "'");
+        }
+        return pjp.proceed();
+    }
+}
+```
+
+#### 6.3.2 Kafka 消费者的 tenant_id 注入(v1.2 R7)
+
+> [!CAUTION]
+> Kafka consumer 会并行消费**全租户**的消息(task-dispatch-queue / vehicle-lifecycle 等),若消费处理方法忘记注入 `app.tenant_id`,后续查询会**绕过 RLS 读到其它租户数据**。必须在 KafkaListener 的拦截器里按消息体自动注入。
+
+```java
+/**
+ * Kafka 消费者租户上下文注入拦截器
+ * 放在所有业务 @KafkaListener 的前面
+ */
+@Component
+public class TenantKafkaInterceptor implements ConsumerInterceptor<String, byte[]> {
+
+    @Override
+    public ConsumerRecords<String, byte[]> onConsume(ConsumerRecords<String, byte[]> records) {
+        // 仅打点,不修改消息;真正的注入在 @KafkaListener 方法入口
+        return records;
+    }
+}
+
+/**
+ * 所有 Kafka 业务监听器的基类,提取 tenantId 注入 TenantContext
+ */
+public abstract class TenantAwareKafkaListener<T> {
+
+    @Autowired JdbcTemplate jdbc;
+
+    protected final void handleWithTenant(T message, Supplier<String> tenantExtractor, Runnable body) {
+        String tenantId = tenantExtractor.get();
+        if (tenantId == null || tenantId.isBlank()) {
+            throw new IllegalStateException("Kafka message missing tenantId, rejected for RLS safety");
+        }
+        TenantContext.set(tenantId);
+        try {
+            body.run();   // 内部的 @Transactional 方法会自动 SET LOCAL app.tenant_id
+        } finally {
+            TenantContext.clear();
+        }
+    }
+}
+
+// 实际监听器示例
+@Component
+public class DispatchCommandListener extends TenantAwareKafkaListener<DispatchCommand> {
+
+    @KafkaListener(topics = "task-dispatch-queue", groupId = "dispatch-worker")
+    public void onMessage(DispatchCommand cmd, Acknowledgment ack) {
+        handleWithTenant(cmd, cmd::getTenantId, () -> {
+            dispatchService.dispatch(cmd);   // 内部的 @Transactional 自动受 RLS 保护
+            ack.acknowledge();
+        });
+    }
+}
+```
+
+**强制约束**:
+
+1. 所有 Kafka 消息的 payload 必须含 `tenantId` 字段(或 header `X-Tenant-Id`)
+2. `TenantAwareKafkaListener.handleWithTenant` 在 tenantId 缺失时**立即抛异常**,消息进 DLQ 人工介入——不允许默认值/兜底,避免默认值导致的跨租户泄漏
+3. 集成测试(Testcontainers)必须覆盖"跨租户消息混合投递不泄漏"的用例
+
+#### 6.3.3 Kafka Record Header 规范(补 P1-10)
+
+为统一 `tenantId` 读取路径并避免 payload 反序列化失败时的上下文丢失,**所有** OpenDOTA 生产的 Kafka 记录必须携带固定 header 集合。`OutboxRelayWorker`(§3.3.1.1)和其它 producer 统一写入:
+
+| Header 名 | 类型 | 来源 | 必填 | 说明 |
+|:----------|:-----|:-----|:----:|:-----|
+| `tenant-id` | UTF-8 bytes | Envelope / outbox_event | ✅ | `TenantAwareKafkaListener` 读取注入 `TenantContext`,优先级高于 payload 字段 |
+| `trace-id` | UTF-8 bytes | OTEL Context | ✅ | 跨端链路追踪,通过 `W3CTraceContextPropagator` 写入 `traceparent` 等价值 |
+| `msg-id` | UTF-8 bytes | Envelope.msgId | ✅ | 幂等锚点,消费者去重 |
+| `operator-id` | UTF-8 bytes | Envelope.operator.id | ❌ | 系统产生的消息为空;审计链需要则写入 |
+| `event-type` | UTF-8 bytes | outbox_event.event_type | ✅ | 路由 / 监控分类使用 |
+| `schema-version` | UTF-8 bytes | 常量 `"1"` | ✅ | payload JSON schema 版本;消费者按版本分派反序列化逻辑 |
+
+**消费者侧读取**(放入 `TenantKafkaHeaderInterceptor`):
+
+```java
+@Component
+public class TenantKafkaHeaderInterceptor implements RecordInterceptor<String, byte[]> {
+    @Override
+    public ConsumerRecord<String, byte[]> intercept(ConsumerRecord<String, byte[]> record,
+                                                    Consumer<String, byte[]> consumer) {
+        String tenantId = headerAsString(record, "tenant-id");
+        String traceId  = headerAsString(record, "trace-id");
+        String msgId    = headerAsString(record, "msg-id");
+        if (tenantId == null) {
+            throw new IllegalStateException("Kafka record missing tenant-id header, DLQ");
+        }
+        TenantContext.set(tenantId);
+        MDC.put("traceId", traceId);
+        MDC.put("msgId", msgId);
+        MDC.put("tenantId", tenantId);
+        return record;
+    }
+    private static String headerAsString(ConsumerRecord<?,?> r, String k) {
+        Header h = r.headers().lastHeader(k);
+        return h == null ? null : new String(h.value(), StandardCharsets.UTF_8);
+    }
+}
+```
+
+**约束**:
+
+- **payload 不重复放 tenantId**(保留字段但不作为主要来源,只用于 header 失配时的告警对比)
+- **Kafka topic 不按租户分区**(单 topic 多租户 + header 路由),便于运维;生产 100 万车级别时再按 tenant hash 做分区路由
+- Consumer config:`interceptor.classes=TenantKafkaHeaderInterceptor`,所有 @KafkaListener 自动生效
+- DLQ topic 保留原 header,人工介入时可溯源租户
+
 ### 6.4 TimescaleDB 时序扩展(后期启用)
 
 当诊断日志量达到百万级时,可对 `diag_record` / `task_execution_log` / `sse_event` / `security_audit_log` 启用 TimescaleDB 时序优化:
@@ -1728,9 +2398,50 @@ SELECT add_retention_policy('task_execution_log', INTERVAL '180 days');
 SELECT add_retention_policy('sse_event', INTERVAL '30 days');
 ```
 
+### 6.6 数据库迁移(Flyway)
+
+> [!IMPORTANT]
+> 所有 DDL / 非破坏性数据变更必须通过 Flyway 版本化管理,禁止直接在生产 PG 执行 DDL。`sql/init_opendota.sql` 是 v1.0 的单体脚本,将按下列规则拆分。
+
+#### 6.6.1 目录约定
+
+```
+opendota-app/src/main/resources/db/
+ ├── migration/
+ │    ├── V1__init_base_tables.sql         -- ODX / operator / role / approval
+ │    ├── V2__init_task_system.sql         -- task_definition / dispatch / execution_log
+ │    ├── V3__init_audit_security.sql      -- security_audit_log / channel_event_log / WORM
+ │    ├── V4__init_task_result_chunk_clock_trust.sql
+ │    ├── V5__init_outbox_event.sql        -- R6 outbox
+ │    ├── V6__init_rls_policies.sql
+ │    └── V{n}__{feature}.sql              -- 后续迭代新增
+ └── data/
+      └── R__mock_data.sql                 -- 可重复的样例数据(dev/test)
+```
+
+`V__` 前缀为版本迁移,一旦执行不可修改;`R__` 前缀为可重复脚本(Flyway 按校验和触发重放)。
+
+#### 6.6.2 Spring Boot 集成
+
+```yaml
+spring:
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    locations: classpath:db/migration,classpath:db/data
+    validate-on-migrate: true
+    table: flyway_schema_history
+```
+
+#### 6.6.3 迁移规则
+
+- **不可变的 V__ 脚本**:一旦提交到 main 分支并在任一环境执行,不可修改。修正要新增 V_{n+1}__ 。
+- **审计表禁止 DROP / TRUNCATE**:`security_audit_log` 在迁移脚本中也不得被修改,只能 `ALTER TABLE ADD COLUMN`。
+- **破坏性迁移(DROP / RENAME)必须加 flag**:生产默认关闭,手动评审后开启。
+
 ---
 
-## 7. 前端工程设计
+
 
 ### 7.1 工程结构
 
@@ -1777,70 +2488,82 @@ opendota-web/
 
 ```typescript
 // hooks/useSse.ts
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef } from 'react';
 
 /**
  * SSE 订阅 Hook
- * 用于接收云端推送的诊断结果
  *
- * 断线重连说明：
- * 浏览器原生 EventSource 在连接断开后会自动重连，并在重连请求中携带
- * Last-Event-ID 头（值为最后一次收到的事件 id 字段）。后端据此从 PG 中
- * 查询断线期间的记录并补发（详见 3.2.1 节）。
+ * 断线重连的关键规则(v1.2 R9 修正):
+ * ──────────────────────────────────────────────────────────────────
+ *   浏览器原生 EventSource 的 Last-Event-ID **只在同一个实例内**生效:
+ *   实例内部自动保存最近一个事件的 id,重连时自动放到 Last-Event-ID 头。
  *
- * 此处使用手动重连（而非 EventSource 默认重连）是为了支持指数退避策略，
- * 避免服务端故障时大量客户端同时重连导致雪崩。
+ *   一旦手动 close() + new EventSource(),实例被销毁,下次重连就不再带
+ *   Last-Event-ID 头,后端无法补发 → 断线期间所有事件永久丢失。
+ *
+ *   正确做法:
+ *   A. 不手动 close/new — 依赖浏览器原生自动重连(默认 3s 退避)
+ *   B. 若业务必须自定义退避策略,则每次重连时从 ref 读上次的 lastEventId,
+ *      以 query 参数形式拼到 URL(?lastEventId=xxx),后端兼容 header 或 query 两种取值
+ * ──────────────────────────────────────────────────────────────────
  */
 export function useSse(vin: string, onMessage: (event: string, data: any) => void) {
-  const eventSourceRef = useRef<EventSource | null>(null);
-  const retryCountRef = useRef(0);
-  const maxRetryDelay = 30000; // 最大重连间隔 30 秒
-
-  const connect = useCallback(() => {
-    // 关闭已有连接
-    eventSourceRef.current?.close();
-
-    const es = new EventSource(`/api/sse/subscribe/${vin}`);
-
-    es.onopen = () => {
-      retryCountRef.current = 0; // 连接成功后重置重试计数
-    };
-
-    // 监听诊断结果推送
-    es.addEventListener('diag-result', (e) => {
-      onMessage('diag-result', JSON.parse(e.data));
-    });
-
-    // 监听通道状态变更
-    es.addEventListener('channel-event', (e) => {
-      onMessage('channel-event', JSON.parse(e.data));
-    });
-
-    // 监听批量任务结果
-    es.addEventListener('batch-result', (e) => {
-      onMessage('batch-result', JSON.parse(e.data));
-    });
-
-    // 断线自动重连（指数退避 + 抖动）
-    // 注意：浏览器 EventSource 重连时会自动携带 Last-Event-ID，
-    // 后端据此补发断线期间的消息，无需前端额外处理
-    es.onerror = () => {
-      es.close();
-      const delay = Math.min(1000 * Math.pow(2, retryCountRef.current), maxRetryDelay);
-      const jitter = delay * 0.3 * Math.random(); // 30% 随机抖动
-      retryCountRef.current++;
-      setTimeout(connect, delay + jitter);
-    };
-
-    eventSourceRef.current = es;
-  }, [vin, onMessage]);
+  const esRef = useRef<EventSource | null>(null);
+  const lastEventIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (vin) connect();
-    return () => eventSourceRef.current?.close();
-  }, [vin, connect]);
+    if (!vin) return;
+
+    // 首次打开:浏览器后续会自动携带 Last-Event-ID 重连,我们只需保证不销毁实例
+    const open = (resumeFromId: string | null) => {
+      const url = resumeFromId
+        ? `/api/sse/subscribe/${vin}?lastEventId=${encodeURIComponent(resumeFromId)}`
+        : `/api/sse/subscribe/${vin}`;
+      const es = new EventSource(url, { withCredentials: true });
+
+      // 监听所有事件类型时,onmessage 用于 default;具名事件用 addEventListener
+      const handle = (type: string) => (e: MessageEvent) => {
+        if (e.lastEventId) lastEventIdRef.current = e.lastEventId;
+        onMessage(type, JSON.parse(e.data));
+      };
+      ['diag-result', 'batch-result', 'script-result', 'channel-event',
+       'task-progress', 'queue-status', 'condition-fired', 'clock-trust']
+        .forEach(t => es.addEventListener(t, handle(t)));
+
+      es.addEventListener('replay-truncated', (e: MessageEvent) => {
+        const data = JSON.parse(e.data);
+        // 断线期间事件超过 1000 条,后端让前端整页刷新走历史 API
+        window.dispatchEvent(new CustomEvent('sse:replay-truncated', { detail: data }));
+      });
+
+      // onerror 不销毁实例 — 让浏览器原生重连携带 Last-Event-ID
+      // 若超过某阈值(如 5 分钟累计失败 > 20 次)再考虑整页刷新
+      es.onerror = () => {
+        // 不做任何销毁动作,浏览器会在 retry 间隔后自动重连
+        // 若服务端返回 401/403,EventSource 会永久关闭,此时需上层登出处理
+        if (es.readyState === EventSource.CLOSED) {
+          // readyState=CLOSED 意味着浏览器判定为终态(通常是 auth 问题)
+          // 自定义退避重连,携带已保存的 lastEventId
+          setTimeout(() => {
+            esRef.current = open(lastEventIdRef.current);
+          }, 5000);
+        }
+      };
+
+      return es;
+    };
+
+    esRef.current = open(null);
+
+    return () => {
+      esRef.current?.close();
+      esRef.current = null;
+    };
+  }, [vin, onMessage]);
 }
 ```
+
+**后端配套要求**:`/api/sse/subscribe/{vin}` 同时接受 header `Last-Event-ID` 和 query `?lastEventId=`;若 header 有值优先,否则用 query。详见 [REST API 规范 §8.3](./opendota_rest_api_spec.md#83-last-event-id-重连契约)。
 
 ---
 
@@ -1875,10 +2598,79 @@ export function useSse(vin: string, onMessage: (event: string, data: any) => voi
 
 ### 8.4 实现建议
 
-可直接使用 Java 编写一个简易的 Spring Boot CLI 应用。也可以复用你们已有的 `vehicle-mqtt-simulator` 项目，仅需适配本协议的 Envelope 格式即可。
+可直接使用 Java 编写一个简易的 Spring Boot CLI 应用。也可以复用你们已有的 `vehicle-mqtt-simulator` 项目,仅需适配本协议的 Envelope 格式即可。
 
-> [!NOTE]
-> **DoIP 模拟说明**：MVP 阶段模拟器仅模拟 CAN 路径（`transport=UDS_ON_CAN`）。DoIP 路径的模拟（TCP Server + Routing Activation 响应 + DoIP Header 封装）计划在后续阶段实现。当前阶段若需验证 DoIP 协议字段的下发链路，可通过模拟器忽略 `transport` 字段、直接按 UDS PDU 返回固定响应的方式实现轻量级验证。
+### 8.5 DoIP 模拟器(v1.2 E6)
+
+> [!IMPORTANT]
+> Phase 2 端到端验证必须覆盖 CAN **和** DoIP 双传输栈。若模拟器只实现 CAN,Phase 5 集成阶段才发现 DoIP 相关代码(Routing Activation / 双工位互斥 / TCP 断连事件)的 bug,返工成本极高。
+
+#### 8.5.1 DoIP 模拟器的最小实现
+
+```java
+@Component
+public class DoipMockServer {
+    @Value("${opendota.simulator.doip.port:13400}")
+    int port;
+
+    @PostConstruct public void start() {
+        Thread.ofVirtual().start(() -> {
+            try (ServerSocket server = new ServerSocket(port)) {
+                while (!Thread.currentThread().isInterrupted()) {
+                    Socket client = server.accept();
+                    Thread.ofVirtual().start(() -> handleClient(client));
+                }
+            } catch (IOException e) { log.error("DoIP mock server crashed", e); }
+        });
+    }
+
+    private void handleClient(Socket client) {
+        try (var in = client.getInputStream(); var out = client.getOutputStream()) {
+            // 1. 读 DoIP Generic Header (8 bytes: protocolVersion, inverse, payloadType(2), payloadLength(4))
+            // 2. payloadType=0x0005 (RoutingActivationReq) → 回 0x0006 with code=0x10
+            // 3. payloadType=0x8001 (DiagnosticMessage) → 解 SA/TA/UDS PDU → 查预设响应表 → 回 0x8002 ack + 0x8001 resp
+            // 4. 支持 payloadType=0x0007 (Alive Check) → 回 0x0008
+            // 5. TCP 断连自动触发 channel_event { doip_tcp_disconnect }
+
+            doipFrameLoop(in, out);
+        } catch (IOException ignored) {}
+    }
+}
+```
+
+#### 8.5.2 `workstationId` 支持
+
+模拟器按 TCP 连接隔离"工位":每个 TCP 连接视为独立 workstation,模拟多诊断仪并发场景。
+
+#### 8.5.3 模拟器配置
+
+```yaml
+opendota:
+  simulator:
+    can:
+      enabled: true
+      mock-responses-file: classpath:mock-can-responses.yml
+    doip:
+      enabled: true
+      port: 13400
+      mock-ecus:
+        - ecuName: VCU
+          logicalAddress: 0x1001
+          mock-responses-file: classpath:mock-vcu-doip-responses.yml
+        - ecuName: GW
+          logicalAddress: 0x1010
+          mock-responses-file: classpath:mock-gw-doip-responses.yml
+```
+
+#### 8.5.4 验收标准
+
+| 用例 | 通过判据 |
+|:---|:---|
+| Routing Activation 成功 | 云端 `channel_event { opened }` 到达 |
+| Routing Activation 失败(模拟器主动返回 code!=0x10) | 云端 `channel_event { doip_routing_failed }` 到达,且关联 task 转 failed |
+| 诊断 PDU 双向 | 下发 `22F190`,收到 `62F190...` |
+| TCP 断连检测 | 模拟器强制 `client.close()` → 云端 5s 内收到 `doip_tcp_disconnect` |
+| workstationId 隔离 | 两个 TCP 连接操作不同 ECU 并行;同 ECU 收到 `ECU_LOCKED_BY_OTHER_WORKSTATION` |
 
 ---
 
@@ -1995,101 +2787,232 @@ management:
       endpoint: http://otel-collector:4317
 ```
 
+### 9.3 Prometheus AlertRule 样例(v1.2 E5)
+
+> 以下规则作为部署模板,对齐协议 §16 的 SLO 目标。实际阈值按租户流量调整。
+
+```yaml
+# deploy/prometheus/opendota-alerts.yml
+groups:
+  - name: opendota-diag-critical
+    interval: 30s
+    rules:
+      - alert: SingleCmdLatencyP99High
+        expr: histogram_quantile(0.99, sum by (le)(rate(dota_single_cmd_latency_seconds_bucket[5m]))) > 5
+        for: 5m
+        labels: { severity: P1 }
+        annotations:
+          summary: "单步诊断 P99 延迟 > 5s"
+          runbook: "https://wiki.internal/opendota/runbook/single-cmd-latency"
+
+      - alert: MqttPublishFailRateHigh
+        expr: sum(rate(dota_mqtt_publish_failed_total[5m])) / sum(rate(dota_mqtt_publish_total[5m])) > 0.001
+        for: 3m
+        labels: { severity: P1 }
+        annotations: { summary: "MQTT 发布失败率 > 0.1%" }
+
+      - alert: SseReplayTriggerSpike
+        expr: increase(dota_sse_replay_triggered_total[1h]) / increase(dota_sse_connections_total[1h]) > 0.05
+        for: 10m
+        labels: { severity: P2 }
+        annotations: { summary: "单小时内 > 5% SSE 连接触发断线补发,可能 Redis 故障" }
+
+  - name: opendota-task-system
+    interval: 30s
+    rules:
+      - alert: TaskDispatchSuccessRateLow
+        expr: dota_task_dispatch_success_ratio < 0.995
+        for: 5m
+        labels: { severity: P1 }
+        annotations: { summary: "任务下发成功率 < 99.5%" }
+
+      - alert: OfflineTaskPushLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le)(rate(dota_offline_task_push_latency_seconds_bucket[5m]))) > 10
+        for: 5m
+        labels: { severity: P2 }
+        annotations: { summary: "车辆上线后首个任务下发 P95 > 10s" }
+
+      - alert: QueueRejectStorm
+        expr: sum by (vin)(rate(dota_queue_reject_total[5m])) > 1/86400
+        for: 10m
+        labels: { severity: P2 }
+        annotations: { summary: "单车 QUEUE_FULL 触发率 > 1 次/天" }
+
+      - alert: ChunkReassemblyTimeout
+        expr: increase(dota_chunk_reassembly_timeout_total[10m]) > 0
+        for: 1m
+        labels: { severity: P1 }
+        annotations: { summary: "聚合分片 5 分钟未重组,车端可能异常" }
+
+      - alert: ExecutionReconcileSpike
+        expr: increase(dota_execution_reconcile_total{reason="TIMEOUT"}[30m]) > 10
+        for: 5m
+        labels: { severity: P1 }
+        annotations: { summary: "30 分钟内 > 10 个孤儿 execution_begin 对账超时" }
+
+  - name: opendota-security
+    interval: 15s
+    rules:
+      - alert: CertExpiringSoon
+        expr: dota_cert_expiry_days <= 30
+        labels: { severity: P2 }
+        annotations: { summary: "证书将于 {{ $value }} 天内过期,尽快轮换" }
+
+      - alert: VinTopicMismatch
+        expr: increase(dota_security_vin_mismatch_total[5m]) > 0
+        for: 0s
+        labels: { severity: P0 }
+        annotations: { summary: "检测到 VIN 与 Topic 不一致,可能的攻击" }
+
+      - alert: TenantMismatch
+        expr: increase(dota_security_tenant_mismatch_total[5m]) > 0
+        for: 0s
+        labels: { severity: P0 }
+        annotations: { summary: "检测到租户不一致,立即调查" }
+
+      - alert: RbacDeniedSpike
+        expr: sum by (operator_id)(rate(dota_rbac_denied_total[5m])) > 20/300
+        for: 5m
+        labels: { severity: P1 }
+        annotations: { summary: "单操作员 5 分钟内 RBAC 拒绝 > 20 次,可能凭据泄漏" }
+
+      - alert: AuditWriteFailed
+        expr: increase(dota_audit_write_failed_total[1m]) > 0
+        for: 0s
+        labels: { severity: P0 }
+        annotations: { summary: "审计日志落盘失败,合规风险" }
+```
+
+**路由到通知渠道**(AlertManager):
+
+```yaml
+route:
+  group_by: ['alertname', 'severity']
+  receiver: 'default'
+  routes:
+    - match: { severity: P0 }
+      receiver: 'phone-and-im'       # 电话 + 即时通讯
+    - match: { severity: P1 }
+      receiver: 'im-and-email'
+    - match: { severity: P2 }
+      receiver: 'email-digest'
+```
+
 ---
 
 ## 10. MVP 开发路线图
 
-### 10.1 阶段划分
+### 10.1 阶段划分(v1.2 R11 重新排期)
+
+> [!IMPORTANT]
+> v1.0 的"18 天完成 MVP"严重低估任务系统复杂度(Kafka 可靠管道 + 四级限流 + 离线推送 + RLS + 审计 WORM + 30 条符合性测试)。v1.2 重新分阶段,任务系统独立占 3-4 周。基础设施和文档齐全的 Phase 0 强制前置。
 
 ```mermaid
 gantt
-    title OpenDOTA MVP 开发计划
+    title OpenDOTA MVP 开发计划(v1.2 修订)
     dateFormat  YYYY-MM-DD
-    section Phase 1 - 基础骨架
-    搭建 Spring Boot 4 工程骨架      :p1_1, 2026-04-17, 1d
-    EMQX 部署与连接测试              :p1_2, after p1_1, 1d
-    Redis 部署与 Pub/Sub 验证         :p1_3, after p1_1, 1d
-    PostgreSQL 建表                  :p1_4, after p1_1, 1d
+    section Phase 0 - 基础设施筹备(必须前置)
+    docker-compose 全栈起环境     :p0_1, 2026-04-20, 2d
+    Flyway + init DDL 迁移脚本     :p0_2, after p0_1, 1d
+    REST API 规范冻结与前端打桩    :p0_3, 2026-04-20, 2d
+    车端 Agent 规范评审           :p0_4, 2026-04-20, 2d
 
-    section Phase 2 - 核心链路打通
-    MQTT 发布/订阅模块开发           :p2_1, after p1_2, 2d
-    车端模拟器开发                    :p2_2, after p2_1, 1d
-    SSE 推送模块开发                  :p2_3, after p2_1, 2d
-    Redis 异步结果分发开发            :p2_4, after p2_1, 2d
-    端到端链路验证                    :p2_5, after p2_4, 1d
+    section Phase 1 - 骨架与通讯
+    Spring Boot 3.4.2 工程骨架    :p1_1, after p0_2, 2d
+    EMQX + mTLS + ACL 三元校验    :p1_2, after p1_1, 2d
+    Kafka topic + outbox 骨架     :p1_3, after p1_1, 2d
+    PostgreSQL + RLS + 租户拦截器  :p1_4, after p1_1, 2d
 
-    section Phase 3 - ODX 与翻译
-    手工注入 ODX 测试数据             :p3_1, after p2_5, 1d
-    服务目录查询 API 开发             :p3_2, after p3_1, 2d
-    ODX 编码引擎开发                  :p3_3, after p3_2, 2d
-    ODX 翻译引擎开发                  :p3_4, after p3_3, 2d
+    section Phase 2 - 核心链路
+    MQTT Pub/Sub + Envelope       :p2_1, after p1_2, 2d
+    Redis Pub/Sub + sse_event 流水 :p2_2, after p2_1, 2d
+    SSE 断线补发 + Last-Event-ID  :p2_3, after p2_2, 2d
+    车端模拟器(CAN + DoIP)       :p2_4, after p2_1, 3d
+    端到端单步诊断闭环验证         :p2_5, after p2_3, 2d
 
-    section Phase 3.5 - 任务管理系统
-    任务定义 CRUD API 开发            :p35_1, after p3_2, 2d
-    任务分发调度器开发                :p35_2, after p35_1, 2d
-    EMQX Webhook 在线状态管理       :p35_3, after p35_1, 1d
-    离线任务推送机制开发              :p35_4, after p35_3, 2d
-    多 ECU 脚本与队列控制开发          :p35_5, after p35_2, 2d
+    section Phase 3 - ODX 引擎
+    ODX 导入与 signal_catalog      :p3_1, after p2_5, 3d
+    ODX 编码 + macroType 路由     :p3_2, after p3_1, 2d
+    翻译引擎(全 UDS 服务)        :p3_3, after p3_2, 3d
 
-    section Phase 4 - 前端界面
-    React 工程搭建                   :p4_1, after p2_5, 1d
-    诊断控制台页面开发                :p4_2, after p4_1, 3d
-    批量任务页面开发                  :p4_3, after p4_2, 2d
-    任务管理与进度看板页面            :p4_4, after p4_3, 2d
+    section Phase 4 - 任务系统(核心 3-4 周)
+    task_definition CRUD + 校验    :p4_1, after p3_1, 3d
+    Kafka Dispatch 管道 + 限流    :p4_2, after p4_1, 3d
+    离线推送(vehicle-lifecycle)  :p4_3, after p4_2, 3d
+    execution_begin/end 双 ack     :p4_4, after p4_3, 2d
+    supersedes + task_ack 幂等    :p4_5, after p4_4, 2d
+    queue_reject + pending_backlog :p4_6, after p4_5, 2d
+    多 ECU script + per-ECU 锁    :p4_7, after p4_2, 3d
+    条件任务 + 监听基座            :p4_8, after p4_4, 3d
+    时钟信任模型 + 降级           :p4_9, after p4_4, 2d
+    聚合分片重组                  :p4_10, after p4_4, 2d
 
-    section Phase 5 - 集成验证
-    前后端联调                       :p5_1, after p4_4, 2d
-    全链路端到端测试                  :p5_2, after p5_1, 2d
+    section Phase 5 - 前端与任务看板
+    React 骨架 + 诊断控制台        :p5_1, after p2_5, 4d
+    任务管理 UI                   :p5_2, after p5_1, 4d
+    任务进度看板 + 版本链          :p5_3, after p5_2, 3d
+
+    section Phase 6 - 安全 / 审计 / 可观测性
+    mTLS 证书签发与轮换            :p6_1, after p1_2, 3d
+    Maker-Checker 审批流           :p6_2, after p4_1, 3d
+    审计 WORM + 归档               :p6_3, after p6_2, 2d
+    Prometheus + Grafana + Jaeger :p6_4, after p4_10, 3d
+
+    section Phase 7 - 符合性测试与验收
+    30 条 Conformance Test 自动化  :p7_1, after p4_10, 4d
+    性能压测(10 万车模拟)        :p7_2, after p7_1, 3d
+    UAT 与生产灰度                :p7_3, after p7_2, 5d
 ```
 
-### 10.2 Phase 优先级与验收标准
+### 10.2 Phase 级验收标准
 
-#### Phase 1：基础骨架（Day 1-2）
-**目标**：所有基础设施就绪，Spring Boot 能编译启动。
-- [ ] Spring Boot 4 + Java 25 工程可编译运行
-- [ ] EMQX 单节点部署完成，可通过客户端工具 Pub/Sub
-- [ ] Redis 可连接，`PUBLISH/SUBSCRIBE` 命令测试通过
-- [ ] PostgreSQL 所有核心表建表完成
+#### Phase 0 — 基础设施筹备(1 周)
+**交付**:可本地 `docker-compose up` 启动 EMQX/Kafka/Redis/PG/Grafana/Jaeger;Flyway V1__init.sql 建表成功;REST API OpenAPI 3 规范冻结;车端 Agent 规范评审通过。
 
-#### Phase 2：核心链路（Day 3-6）⭐ 最重要
-**目标**：打通"前端发指令 → MQTT 下发 → 模拟车端回复 → Redis 广播 → SSE 推送 → 前端显示"的全异步闭环。
-- [ ] 通过 Postman 调用 API 可触发 MQTT 发布
-- [ ] 车端模拟器收到消息后 1 秒内自动回复
-- [ ] SSE 端点可被浏览器 EventSource 连接
-- [ ] 整个闭环走通：下发 `22F190` → 收到 `62F190...` → 推送到浏览器
+#### Phase 1 — 骨架与通讯(1 周)
+**交付**:Spring Boot 3.4.2 启动成功;EMQX mTLS + 三元校验通过 Postman 模拟;Kafka topic 建好;PG RLS 跨租户隔离测试通过。
 
-> [!IMPORTANT]
-> Phase 2 是整个 MVP 的**安全网**。只要这条链路走通了，你就可以向任何人演示"远程诊断的核心逻辑"。后续所有的功能（ODX 解析、批量任务、前端美化）都是在这条线上叠加。
+#### Phase 2 — 核心链路(2 周)⭐ 最关键
+**交付**:"前端→API→MQTT→模拟车端→Redis→SSE→前端"的完整异步闭环;`22F190` 读 VIN 成功;断线 10 秒后 SSE 自动补发;DoIP 通道也能走通。
 
-#### Phase 3：ODX 与翻译（Day 7-11）
-**目标**：原始 Hex 数据可被翻译为人类可读的物理值。
-- [ ] 手工注入至少 5 条 ODX 服务定义数据
-- [ ] 前端能展示 ECU 服务目录树
-- [ ] 下发指令时自动从数据库读取 `requestRawHex`
-- [ ] 返回结果可被翻译为中文描述 + 物理值
+#### Phase 3 — ODX 引擎(1.5 周)
+**交付**:导入一份真实 ODX 生成 `odx_diag_service` 数据;前端服务目录树展示;下发请求被正确编码,响应被翻译为中文。
 
-#### Phase 3.5：任务管理系统（Day 9-14，可与 Phase 3/4 并行）
-**目标**：任务 CRUD、分发调度、离线推送、队列控制全流程打通。
-- [ ] 任务定义 CRUD API 可用
-- [ ] EMQX Webhook 车辆在线状态维护正常
-- [ ] 在线车辆任务分发流程打通
-- [ ] 离线车辆上线后自动推送待下发任务
-- [ ] 多 ECU 编排脚本下发与结果收集
-- [ ] 车端任务队列查询与操控流程验证
+#### Phase 4 — 任务系统(3-4 周)⭐⭐ 最难
+**交付**:
+- 单次 / 周期 / 定时 / 条件 任务全部能创建并落盘
+- 离线车辆上线后自动推送 `pending_online` 任务
+- 10 万辆模拟车发起任务,Kafka 削峰成功,无打爆 MQTT 的情况
+- 多 ECU 脚本并行执行,锁获取按字典序原子
+- `execution_begin/end` 双 ack 幂等;车端 SQLite 损坏场景可恢复
+- `supersedes` 三分支(queued/executing/non-interruptible)符合协议
+- `queue_reject` 触发后 `pending_backlog` 自动 replay
+- 条件任务 DTC 触发保真(`dtc_pending_capture` 表不丢首次时间戳)
 
-#### Phase 4：前端界面（Day 7-15，可与 Phase 3/3.5 并行）
-**目标**：有一个可用的诊断控制台和任务管理界面。
-- [ ] 左侧服务树 + 右侧结果终端的基础布局
-- [ ] 点击服务可触发诊断，结果实时显示
-- [ ] 批量任务 JSON 编辑与提交
-- [ ] 任务创建/列表/进度看板页面
+#### Phase 5 — 前端(3 周,可与 P4 并行)
+**交付**:诊断控制台;任务 CRUD + 进度看板;版本链溯源。
 
-#### Phase 5：集成验证（Day 16-18）
-**目标**：全部功能联调通过。
-- [ ] 前端全流程可演示
-- [ ] 诊断记录可持久化查询
-- [ ] 任务分发与离线推送全流程验证
-- [ ] 基本的错误处理和超时处理
+#### Phase 6 — 安全/审计/可观测性(2 周,可与 P4/P5 并行)
+**交付**:mTLS 证书签发平台;Maker-Checker 审批流上线;审计日志归档到 S3 Object Lock;Prometheus 全部 §16 SLI 指标接通;Grafana 仪表盘 4 类(诊断链路 / 任务系统 / 资源仲裁 / 安全合规)。
+
+#### Phase 7 — 符合性测试与验收(2 周)
+**交付**:协议附录 D 全部 30 条用例自动化通过;压测模拟 10 万车 24 小时稳定;生产灰度 5% 租户观察 1 周无异常。
+
+### 10.3 时间总账
+
+| 阶段 | 人周 | 关键依赖 |
+|:---|:---:|:---|
+| Phase 0 | 1 | 无 |
+| Phase 1 | 1 | Phase 0 |
+| Phase 2 | 2 | Phase 1 |
+| Phase 3 | 1.5 | Phase 2 |
+| Phase 4 | 3-4 | Phase 2, Phase 3(部分) |
+| Phase 5 | 3 | Phase 2 |
+| Phase 6 | 2 | Phase 1 |
+| Phase 7 | 2 | Phase 4, Phase 6 |
+| **总计** | **~12-14 周**(3 个月) | — |
+
+并行压缩下总日历时间约 **10-11 周**。相比 v1.0 的 18 天,更贴近生产级复杂度。
 
 ---
 
@@ -2155,6 +3078,160 @@ opendota:
     single-timeout-ms: 5000       # 单步诊断默认超时
     channel-idle-timeout-ms: 300000 # 诊断通道空闲超时
 ```
+
+### 11.5 测试策略(v1.2 E4)
+
+> [!IMPORTANT]
+> 没有测试策略的任务系统上线是不可接受的。本节定义单元 / 集成 / 符合性 / 压测四层策略。
+
+#### 11.5.1 单元测试
+
+- **工具**:JUnit 5 + Mockito + AssertJ
+- **覆盖率**:`opendota-common` 工具类 > 90%;业务模块(`opendota-diag/task/security/odx`)> 70%
+- **不测**:Spring 注入、外部 SDK 直调(Paho/Kafka/PG 驱动)
+- **必测**:
+  - `HexUtils` / `UdsUtils` 的边界用例(空帧、超长帧、ISO-TP 乱拼)
+  - 状态机转换(per-ECU、task_definition、task_dispatch_record)
+  - `missPolicy` 推导规则(协议 §8.3.4)
+  - `executionSeq baseline` 合并规则(R1)
+  - RBAC `canExecute` 对 20+ act × 4 role 的矩阵穷举
+
+#### 11.5.2 集成测试(Testcontainers)
+
+```java
+@SpringBootTest
+@Testcontainers
+class TaskDispatchIntegrationTest {
+
+    @Container static PostgreSQLContainer<?> pg = new PostgreSQLContainer<>("postgres:16-alpine");
+    @Container static GenericContainer<?> redis = new GenericContainer<>("redis:7-alpine").withExposedPorts(6379);
+    @Container static GenericContainer<?> emqx = new GenericContainer<>("emqx/emqx:5.8").withExposedPorts(1883);
+    @Container static KafkaContainer kafka = new KafkaContainer("apache/kafka:3.8.0");
+
+    @DynamicPropertySource
+    static void props(DynamicPropertyRegistry r) {
+        r.add("spring.datasource.url", pg::getJdbcUrl);
+        r.add("spring.data.redis.host", redis::getHost);
+        r.add("spring.data.redis.port", () -> redis.getMappedPort(6379));
+        r.add("opendota.mqtt.broker-url", () -> "tcp://" + emqx.getHost() + ":" + emqx.getMappedPort(1883));
+        r.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
+    }
+
+    @Test void task_create_then_offline_vehicle_online_triggers_dispatch() {
+        // ... 完整的 HTTP → PG → Kafka → MQTT → 模拟车端 → Redis → SSE 链路
+    }
+}
+```
+
+**必须覆盖的集成用例**:
+
+1. 任务创建 → 离线车辆 → 上线后自动下发
+2. `queue_reject` → `pending_backlog` → 车端空闲 → replay
+3. `execution_begin/end` 双 ack 幂等 — 重发 begin 不重复插入
+4. `supersedes` 三分支(queued/executing/non-interruptible)
+5. 多 ECU 脚本字典序原子锁 — 两 VIN 环形请求不死锁
+6. 跨租户隔离 — RLS 阻断 tenant A 查 tenant B 数据
+7. Kafka consumer 在 tenantId 缺失时进 DLQ,不污染状态
+
+#### 11.5.3 符合性测试(协议附录 D)
+
+- **位置**:`opendota-app/src/test/java/.../conformance/`
+- **数据**:`src/test/resources/conformance/` 按 30 条用例组织 JSON fixture
+- **执行**:`mvn test -Pconformance` 跑全部;CI 每个 PR 必须通过
+- **报告**:JUnit XML,挂 GitHub Actions
+
+#### 11.5.4 压测
+
+- **工具**:Gatling 或 k6 模拟前端 HTTP + 模拟器 Agent 集群
+- **场景**:
+  - 10 万辆车持续在线,每 5 分钟一次周期任务
+  - 1 万辆车 30 秒内集中上线(惊群测试,验证 §13.9 分桶 jitter 效果)
+  - 1000 操作员并发点击诊断控制台
+- **判据**:P99 延迟不突破 SLO;无 OOM;PG 连接池不耗尽;Kafka lag < 10 秒
+- **执行**:上线前 1 周,每季度回归
+
+---
+
+## 12. 容量规划(v1.2 E3)
+
+> 本节给出单节点承载能力与生产副本建议,具体数值随硬件配置与调优迭代更新。
+
+### 12.1 目标场景
+
+- **租户数**:10 个(主机厂)
+- **车辆总数**:100 万
+- **同时在线比例**:高峰 40%,即 40 万车在线
+- **每车日均任务数**:~50(含周期任务的触发)
+- **V2C QPS 目标**:平稳期 1500 / 高峰 5000
+
+### 12.2 单节点承载
+
+| 组件 | 单节点承载 | 依据 |
+|:---|:---:|:---|
+| **opendota-app**(Spring Boot 3.4.2 / JVM 4C8G) | HTTP QPS 3000 / V2C 消费 2000/s | 虚拟线程基准 |
+| **PostgreSQL 16**(4C16G) | 5000 TPS(90% read) | PG 原厂数据 |
+| **Redis 7**(2C4G) | Pub/Sub 50K QPS | Redis benchmark |
+| **Kafka broker**(4C8G) | 10K msg/s/topic | 生产基准 |
+| **EMQX 5**(4C8G) | 100 万 MQTT 连接 / 10 万 msg/s | 官方 |
+| **PG SSE 查询**(含 sse_event 回填) | 1000 QPS/从库 | RLS + 索引 |
+
+### 12.3 副本建议(100 万车场景)
+
+| 组件 | 副本 | 理由 |
+|:---|:---:|:---|
+| opendota-app | 10-20(HPA) | 5000 V2C QPS ÷ 2000 = 至少 3;HTTP + Kafka consumer + MQTT subscriber 各占一部分 → 预留 3-4 倍 |
+| PostgreSQL | 1 主 + 2 从 | 主写 5000 TPS 内;只读扩散到 2 从 |
+| Redis Cluster | 3 主 + 3 从 | 分片支撑 Pub/Sub 聚合与 Token Bucket |
+| Kafka broker | 3(`min.insync.replicas=2`) | 任意一 broker 挂不影响写入 |
+| EMQX | 3 节点集群 | 40 万连接分散;一节点挂不影响整体 |
+| Jaeger / Tempo | 按 trace 量估算 | 10% 采样 → ~500 span/s |
+
+### 12.4 连接池与线程池
+
+```yaml
+# opendota-app 关键池子配置
+spring:
+  datasource:
+    hikari:
+      maximum-pool-size: 50          # 单实例连接数
+      minimum-idle: 10
+  kafka:
+    consumer:
+      max-poll-records: 100
+      concurrency: 8                 # per @KafkaListener
+
+opendota:
+  mqtt:
+    max-inflight: 1000               # Paho
+    auto-reconnect: true
+  redisson:
+    thread-pool-size: 32
+    netty-threads: 16
+```
+
+**PG 总连接估算**:单实例 50 × 15 app 实例 = 750 条;PG 主应当配置 `max_connections >= 1500` 留安全余量,或加 PgBouncer。
+
+### 12.5 存储估算
+
+| 表 | 单行大小(均值) | 日增量 | 3 年累计 | 对应策略 |
+|:---|:---:|:---:|:---:|:---|
+| `diag_record` | 2 KB | 400 万 = 8 GB/日 | 8.7 TB | PG 90 天 + 冷归档 |
+| `task_execution_log` | 3 KB | 200 万 = 6 GB/日 | 6.5 TB | PG 180 天 + 冷归档 |
+| `sse_event` | 1 KB | 1000 万 = 10 GB/日 | 30 天滚动 | 无冷归档 |
+| `security_audit_log` | 1.5 KB | 300 万 = 4.5 GB/日 | 4.9 TB(热) + 全量 S3 | WORM |
+| `task_dispatch_record` | 1 KB | 累增 50 万 | 数百 GB | 90 天清理 terminal 状态 |
+
+TimescaleDB hypertable + retention 策略见架构 §6.4。
+
+### 12.6 瓶颈识别与扩展路径
+
+| 瓶颈 | 监控指标 | 扩展动作 |
+|:---|:---|:---|
+| app CPU | `process_cpu_usage` > 80% | HPA 扩副本 |
+| PG 主 TPS | `pg_stat_database.xact_commit` 增长 | 读/写分离 + 分区 |
+| Kafka lag | `kafka_consumer_lag` > 10s | 加分区 + consumer |
+| EMQX 连接 | `emqx_connections` 接近 90% | 加 broker |
+| Redis OPS | `redis_commands_processed_total` 斜率 | Cluster 加分片 |
 
 ---
 

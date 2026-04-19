@@ -4,13 +4,14 @@
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
     <modelVersion>4.0.0</modelVersion>
 
-    <!-- 注意：Spring Boot 4.0 尚未正式发布，由于选型的要求，这里引用一个示例版本标识。
-         如果在真实环境中运行 `mvn clean install` 找不到依赖，请将其临时降级为 Spring Boot 3.4.x -->
+    <!-- Spring Boot 3.4.2 (GA) + Java 21 LTS 组合,Maven Central 可直接解析。
+         虚拟线程自 Java 21 起 GA,生产运行时无须开启 preview。
+         Spring Boot 4.x / Java 25 升级路径由 opendota_deployment_spec 的版本矩阵跟踪。 -->
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>4.0.0-SNAPSHOT</version>
-        <relativePath/> <!-- lookup parent from repository -->
+        <version>3.4.2</version>
+        <relativePath/>
     </parent>
 
     <groupId>com.opendota</groupId>
@@ -24,22 +25,27 @@
         <module>opendota-common</module>
         <module>opendota-mqtt</module>
         <module>opendota-odx</module>
+        <module>opendota-security</module>
+        <module>opendota-observability</module>
         <module>opendota-diag</module>
+        <module>opendota-task</module>
         <module>opendota-admin</module>
         <module>opendota-app</module>
     </modules>
 
     <properties>
-        <!-- 强制使用 Java 25 -->
-        <java.version>25</java.version>
-        <maven.compiler.source>25</maven.compiler.source>
-        <maven.compiler.target>25</maven.compiler.target>
-        <maven.compiler.enablePreview>true</maven.compiler.enablePreview> <!-- 为 Java最新特性开启预览支持 -->
+        <!-- Java 21 LTS: 虚拟线程 GA,无需 preview -->
+        <java.version>21</java.version>
+        <maven.compiler.source>21</maven.compiler.source>
+        <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-        
+
         <!-- 第三方依赖版本 -->
         <paho.mqtt.version>1.2.5</paho.mqtt.version>
-        <springdoc.version>2.5.0</springdoc.version>
+        <springdoc.version>2.7.0</springdoc.version>
+        <spring-kafka.version>3.3.1</spring-kafka.version>
+        <redisson.version>3.41.0</redisson.version>
+        <testcontainers.version>1.20.4</testcontainers.version>
     </properties>
 
     <dependencyManagement>
@@ -56,6 +62,29 @@
                 <groupId>org.springdoc</groupId>
                 <artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>
                 <version>${springdoc.version}</version>
+            </dependency>
+
+            <!-- Spring Kafka: task-dispatch-queue / vehicle-lifecycle 削峰管道 -->
+            <dependency>
+                <groupId>org.springframework.kafka</groupId>
+                <artifactId>spring-kafka</artifactId>
+                <version>${spring-kafka.version}</version>
+            </dependency>
+
+            <!-- Redisson: 分布式 Token Bucket 四级限流 (架构 §4.4.2) -->
+            <dependency>
+                <groupId>org.redisson</groupId>
+                <artifactId>redisson-spring-boot-starter</artifactId>
+                <version>${redisson.version}</version>
+            </dependency>
+
+            <!-- Testcontainers: 集成测试一键起 PG/EMQX/Kafka/Redis -->
+            <dependency>
+                <groupId>org.testcontainers</groupId>
+                <artifactId>testcontainers-bom</artifactId>
+                <version>${testcontainers.version}</version>
+                <type>pom</type>
+                <scope>import</scope>
             </dependency>
 
             <!-- 内部模块依赖隔离 -->
@@ -84,6 +113,21 @@
                 <artifactId>opendota-admin</artifactId>
                 <version>${project.version}</version>
             </dependency>
+            <dependency>
+                <groupId>com.opendota</groupId>
+                <artifactId>opendota-task</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.opendota</groupId>
+                <artifactId>opendota-security</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>com.opendota</groupId>
+                <artifactId>opendota-observability</artifactId>
+                <version>${project.version}</version>
+            </dependency>
         </dependencies>
     </dependencyManagement>
 
@@ -107,7 +151,6 @@
 
     <build>
         <plugins>
-            <!-- Java 25 编译插件配置 -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-compiler-plugin</artifactId>
@@ -115,9 +158,6 @@
                     <source>${java.version}</source>
                     <target>${java.version}</target>
                     <compilerArgs>
-                        <!-- 启用预览特性 -->
-                        <arg>--enable-preview</arg>
-                        <!-- 允许提取方法名参数 -->
                         <arg>-parameters</arg>
                     </compilerArgs>
                 </configuration>

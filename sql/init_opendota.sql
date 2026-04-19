@@ -185,6 +185,9 @@ CREATE INDEX IF NOT EXISTS idx_diag_record_task ON diag_record(task_id, executio
 CREATE INDEX IF NOT EXISTS idx_diag_record_tenant_op ON diag_record(tenant_id, operator_id, created_at DESC);
 
 -- 批量任务(单 ECU 多步序列)
+-- ⚠️ DEPRECATED (v1.2 R8):v1.0 遗留表,新代码不应使用。
+-- 所有批量/周期/脚本任务统一走 task_definition + task_dispatch_record,batch_task 仅供历史数据查询。
+-- MVP 完成后的下个里程碑将迁移历史数据到 task_execution_log 并物理删除本表。
 CREATE TABLE IF NOT EXISTS batch_task (
     id                BIGSERIAL PRIMARY KEY,
     task_id           VARCHAR(64) NOT NULL UNIQUE,
@@ -226,7 +229,14 @@ CREATE TABLE IF NOT EXISTS task_definition (
     created_by        VARCHAR(64) REFERENCES operator(id),
     created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    CHECK (execute_valid_until IS NULL OR valid_until IS NULL OR execute_valid_until >= valid_until)
+    CHECK (execute_valid_until IS NULL OR valid_until IS NULL OR execute_valid_until >= valid_until),
+    -- v1.2 R3: 防永动机任务。周期/条件任务若 maxExecutions=-1 (无限) 则 executeValidUntil 必须有界
+    -- 单次/定时任务不检(executeValidUntil 天然由 executeAt(List) 隐含上界)
+    CHECK (
+        schedule_type NOT IN ('periodic', 'conditional')
+        OR (schedule_config->>'maxExecutions')::int <> -1
+        OR execute_valid_until IS NOT NULL
+    )
 );
 CREATE INDEX IF NOT EXISTS idx_task_def_status ON task_definition(status);
 CREATE INDEX IF NOT EXISTS idx_task_def_priority ON task_definition(priority, created_at);

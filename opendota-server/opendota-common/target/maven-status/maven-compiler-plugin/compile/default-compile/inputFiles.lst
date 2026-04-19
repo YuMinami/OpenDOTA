@@ -1,0 +1,5 @@
+/home/aircold/OpenDOTA/opendota-server/opendota-common/src/main/java/com/opendota/common/envelope/DiagAction.java
+/home/aircold/OpenDOTA/opendota-server/opendota-common/src/main/java/com/opendota/common/envelope/DiagMessage.java
+/home/aircold/OpenDOTA/opendota-server/opendota-common/src/main/java/com/opendota/common/envelope/Operator.java
+/home/aircold/OpenDOTA/opendota-server/opendota-common/src/main/java/com/opendota/common/envelope/OperatorRole.java
+/home/aircold/OpenDOTA/opendota-server/opendota-common/src/main/java/com/opendota/common/util/HexUtils.java
