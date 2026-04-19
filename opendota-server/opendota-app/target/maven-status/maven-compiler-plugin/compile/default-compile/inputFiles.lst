@@ -1,7 +1,0 @@
-/home/aircold/OpenDOTA/opendota-server/opendota-app/src/main/java/com/opendota/OpenDotaApplication.java
-/home/aircold/OpenDOTA/opendota-server/opendota-app/src/main/java/com/opendota/simulator/CanMockResponder.java
-/home/aircold/OpenDOTA/opendota-server/opendota-app/src/main/java/com/opendota/simulator/DoipMockServer.java
-/home/aircold/OpenDOTA/opendota-server/opendota-app/src/main/java/com/opendota/simulator/MqttVehicleSimulator.java
-/home/aircold/OpenDOTA/opendota-server/opendota-app/src/main/java/com/opendota/simulator/SimulatorAutoConfiguration.java
-/home/aircold/OpenDOTA/opendota-server/opendota-app/src/main/java/com/opendota/simulator/SimulatorLifecycle.java
-/home/aircold/OpenDOTA/opendota-server/opendota-app/src/main/java/com/opendota/simulator/SimulatorProperties.java
