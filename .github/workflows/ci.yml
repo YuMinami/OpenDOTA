@@ -84,7 +84,7 @@ jobs:
   integration:
     name: integration
     runs-on: ubuntu-latest
-    needs: build
+    needs: unit-tests
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
@@ -98,7 +98,6 @@ jobs:
 
       - name: mvn verify -Pintegration
         run: mvn ${{ env.MAVEN_CLI }} verify -Pintegration -DskipITs=false
-        continue-on-error: true # profile 尚未在所有模块启用,后续 Phase 1+ 强制
 
       - name: 失败时上传 failsafe 报告
         if: failure()
@@ -108,12 +107,20 @@ jobs:
           path: opendota-server/**/target/failsafe-reports/
           retention-days: 7
 
+      - name: 失败时上传 surefire 报告
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-integration
+          path: opendota-server/**/target/surefire-reports/
+          retention-days: 7
+
   # -------------------- conformance --------------------
   # 仅 PR 触发: 协议附录 D 30 条符合性测试 (Phase 2+ 开始接入)
   conformance:
     name: conformance
     runs-on: ubuntu-latest
-    needs: build
+    needs: integration
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
@@ -127,4 +134,11 @@ jobs:
 
       - name: mvn test -Pconformance
         run: mvn ${{ env.MAVEN_CLI }} test -Pconformance
-        continue-on-error: true # 用例集 Phase 2 起开始增补
+
+      - name: 失败时上传 surefire 报告
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports-conformance
+          path: opendota-server/**/target/surefire-reports/
+          retention-days: 7

@@ -165,4 +165,16 @@
         </plugins>
     </build>
 
+    <profiles>
+        <!-- CI Gate 占位 profile:
+             Phase 0 先保证 GitHub Actions 命令稳定可执行,后续再把
+             Testcontainers / 协议符合性测试逐步挂进这些 profile。 -->
+        <profile>
+            <id>integration</id>
+        </profile>
+        <profile>
+            <id>conformance</id>
+        </profile>
+    </profiles>
+
 </project>
