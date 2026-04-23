@@ -176,7 +176,7 @@ Phase X Step Y.Z
 - [ ] 单元测试 YyyyTest 通过(新增 N 个)
 - [ ] 集成测试场景 X.Y 通过
 - [ ] 符合性用例 TV-N-M 通过(若适用)
-- [ ] 手动验证: `mvn spring-boot:run` + `curl ...` 返回 ✅
+- [ ] 手动验证: `cd opendota-server && mvn spring-boot:run -f opendota-app/pom.xml -Dspring-boot.run.profiles=dev` + `curl ...` 返回 ✅
 
 ## 文档更新
 - [ ] 协议 §X.Y
@@ -230,7 +230,7 @@ Phase X Step Y.Z
 
 ## Phase 0: 基础设施筹备
 
-**目标**:开发第一天前的所有工具链齐备,`mvn spring-boot:run -P dev` 能起一个完整的本地栈并看到模拟器响应。
+**目标**:开发第一天前的所有工具链齐备,在 `opendota-server/` 目录执行 `mvn spring-boot:run -f opendota-app/pom.xml -Dspring-boot.run.profiles=dev` 能起一个完整的本地栈并看到模拟器响应。
 
 **前置条件**:无(这是起点)
 
@@ -285,8 +285,8 @@ Phase X Step Y.Z
 **参考**:本计划 §Phase 0 已完成列表
 
 **实现要点**:
-- `mvn spring-boot:run -pl opendota-app -am -Dspring-boot.run.profiles=dev`
-- 观察日志:两辆模拟车上线(LSVWA... 在线,LSVWB... 离线)
+- 在 `opendota-server/` 目录执行 `mvn spring-boot:run -f opendota-app/pom.xml -Dspring-boot.run.profiles=dev`
+- 观察日志:启动 2 辆模拟车,其中 LSVWA... 在线,LSVWB... 保持离线
 - 手动发 MQTT 消息测试:`mosquitto_pub -t 'dota/v1/cmd/single/LSVWA234567890123' -m '{...}'` 应收到模拟响应
 
 **验收**:
@@ -616,7 +616,7 @@ opendota-diag/src/main/java/com/opendota/diag/sse/
 **参考**:本 Phase 2 所有 Step
 
 **实现要点**:
-- 启动 docker-compose + mvn spring-boot:run (dev)
+- 启动 docker-compose + 在 `opendota-server/` 目录执行 `mvn spring-boot:run -f opendota-app/pom.xml -Dspring-boot.run.profiles=dev`
 - curl 开通道 → 单步 → 观察 SSE 输出
 - 断言关键字段存在
 

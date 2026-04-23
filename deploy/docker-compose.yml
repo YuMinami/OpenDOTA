@@ -1,0 +1,173 @@
+# ============================================================
+# OpenDOTA 本地开发栈
+# ------------------------------------------------------------
+# 参考: doc/opendota_deployment_spec.md §2
+#
+# 启动:
+#   cd deploy && docker compose up -d
+#
+# 停止并清理数据卷:
+#   docker compose down -v
+#
+# ⚠️ 本文件仅用于本地开发/测试。生产环境走 deploy/charts/opendota/ Helm Chart。
+# ============================================================
+
+name: opendota
+
+services:
+  # -------------------- PostgreSQL 16 --------------------
+  # 挂载 ../sql 作为首次启动初始化脚本 (sql/init_opendota.sql)。
+  # Flyway V1-V7 迁移由 opendota-app 启动时接管,这里提供兜底。
+  postgres:
+    image: postgres:16-alpine
+    container_name: opendota-postgres
+    environment:
+      POSTGRES_DB: opendota
+      POSTGRES_USER: opendota
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opendota}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ../sql:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U opendota -d opendota"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # -------------------- Redis 7 --------------------
+  # 用途: Pub/Sub (dota:resp:{vin}) + Redisson 分布式 Token Bucket 限流
+  redis:
+    image: redis:7-alpine
+    container_name: opendota-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # -------------------- EMQX 5.8 (MQTT Broker) --------------------
+  # 1883 TCP / 8883 TLS / 18083 Dashboard
+  # 生产必关 1883,这里为方便本地 mosquitto_pub 测试而保留
+  emqx:
+    image: emqx/emqx:5.8
+    container_name: opendota-emqx
+    environment:
+      EMQX_LISTENERS__TCP__DEFAULT__BIND: "0.0.0.0:1883"
+      EMQX_DASHBOARD__DEFAULT_PASSWORD: ${EMQX_DASHBOARD_PASSWORD:-public}
+    ports:
+      - "1883:1883"
+      - "8883:8883"
+      - "18083:18083"
+    healthcheck:
+      test: ["CMD", "emqx", "ctl", "status"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # -------------------- Kafka 3.8 (KRaft 模式) --------------------
+  # 无 Zookeeper 单节点; 需先手动运行 deploy/kafka-init.sh 创建 topic
+  kafka:
+    image: apache/kafka:3.8.0
+    container_name: opendota-kafka
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,PLAINTEXT_HOST://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_LOG_DIRS: /tmp/kraft-combined-logs
+      CLUSTER_ID: 4L6g3nShT-eMCtK--X86sw
+    ports:
+      - "9092:9092"
+      - "29092:29092"
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  # -------------------- Kafka UI --------------------
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: opendota-kafka-ui
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    ports:
+      - "8081:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  # -------------------- OpenTelemetry Collector --------------------
+  # 接收 OTLP (4317 gRPC / 4318 HTTP),转发到 Jaeger 与 Prometheus
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.112.0
+    container_name: opendota-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      - jaeger
+      - prometheus
+
+  # -------------------- Prometheus --------------------
+  prometheus:
+    image: prom/prometheus:v2.54.0
+    container_name: opendota-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=7d"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+
+  # -------------------- Grafana --------------------
+  grafana:
+    image: grafana/grafana:11.2.0
+    container_name: opendota-grafana
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  # -------------------- Jaeger --------------------
+  # all-in-one: 开发期够用,生产改用 Tempo + S3 storage
+  jaeger:
+    image: jaegertracing/all-in-one:1.60
+    container_name: opendota-jaeger
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"    # Jaeger UI
+      - "14268:14268"    # Jaeger thrift HTTP
+      # OTLP 端口 4317/4318 由 otel-collector 占用,这里不暴露避免冲突
+
+volumes:
+  pg-data:
+  redis-data:
+  prometheus-data:
+  grafana-data:

@@ -29,7 +29,7 @@ public class SimulatorLifecycle implements SmartLifecycle {
     public void start() {
         for (MqttVehicleSimulator sim : simulators) {
             try {
-                sim.connect();
+                sim.start();
             } catch (MqttException e) {
                 log.error("启动模拟器失败 vin={}", sim.getVin(), e);
             }

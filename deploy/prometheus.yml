@@ -1,0 +1,43 @@
+# ============================================================
+# Prometheus 抓取配置 (本地 docker-compose)
+# ------------------------------------------------------------
+# 参考: doc/opendota_tech_architecture.md §9.2 SLI 指标
+#
+# 生产环境走 Prometheus Operator + ServiceMonitor, 本文件仅本地开发。
+# ============================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: opendota-local
+    env: dev
+
+scrape_configs:
+  # Prometheus 自监控
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # opendota-app: Spring Boot Actuator + Micrometer
+  # host.docker.internal 让容器内 Prometheus 抓到宿主机上运行的 mvn spring-boot:run
+  - job_name: opendota-app
+    metrics_path: /actuator/prometheus
+    scrape_interval: 10s
+    static_configs:
+      - targets: ["host.docker.internal:8080"]
+        labels:
+          service: opendota-app
+          env: dev
+
+  # OpenTelemetry Collector 自身暴露的指标
+  - job_name: otel-collector
+    static_configs:
+      - targets: ["otel-collector:8888"]
+
+  # EMQX 5 内置 Prometheus 端点 (:18083/api/v5/prometheus/stats)
+  # 生产建议开 /metrics 专用端口并加 auth
+  - job_name: emqx
+    metrics_path: /api/v5/prometheus/stats
+    static_configs:
+      - targets: ["emqx:18083"]

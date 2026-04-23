@@ -69,11 +69,13 @@ INSERT INTO odx_param_codec (service_id, param_name, display_name, byte_offset, 
 VALUES (102, 'BattTemp', '电池温度探针 A', 3, 8, 'unsigned', 'raw * 1 - 40', '°C');
 
 -- 条件任务信号白名单
-INSERT INTO condition_signal_catalog (model_id, signal_name, display_name, data_type, enum_mapping, source, description) VALUES
-    (1, 'KL15_STATUS', '点火钥匙状态', 'enum', '{"0":"OFF","1":"ACC","2":"ON","3":"START"}',
+INSERT INTO condition_signal_catalog
+    (model_id, tenant_id, signal_name, display_name, data_type, enum_mapping, source, description)
+VALUES
+    (1, 'chery-hq', 'KL15_STATUS', '点火钥匙状态', 'enum', '{"0":"OFF","1":"ACC","2":"ON","3":"START"}',
      'dbc_broadcast', '用于上电自检触发'),
-    (1, 'VEHICLE_SPEED', '车速',        'unsigned', NULL, 'dbc_broadcast', 'km/h'),
-    (1, 'BMS_DTC_ACTIVE', 'BMS 活跃故障码数量', 'unsigned', NULL, 'dtc_poll', '每 60s 轮询');
+    (1, 'chery-hq', 'VEHICLE_SPEED', '车速',        'unsigned', NULL, 'dbc_broadcast', 'km/h'),
+    (1, 'chery-hq', 'BMS_DTC_ACTIVE', 'BMS 活跃故障码数量', 'unsigned', NULL, 'dtc_poll', '每 60s 轮询');
 
 -- Mock 车辆在线状态(2 辆测试车)
 INSERT INTO vehicle_online_status (vin, tenant_id, is_online, last_online_at, mqtt_client_id, cert_cn, cert_expires_at, agent_version) VALUES

@@ -1,0 +1,52 @@
+# ============================================================
+# OpenTelemetry Collector 本地开发配置
+# ------------------------------------------------------------
+# 接收 opendota-app OTLP, 转发 Trace 到 Jaeger, 指标暴露给 Prometheus。
+# 生产走 Tempo + Loki + Prometheus 组合,本文件仅本地开发。
+# ============================================================
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+exporters:
+  # Trace -> Jaeger (OTLP gRPC 协议,Jaeger 1.60+ 支持)
+  otlp/jaeger:
+    endpoint: jaeger:4317
+    tls:
+      insecure: true
+
+  # Metrics -> Prometheus 拉模式 (Prometheus 抓 :8889)
+  prometheus:
+    endpoint: 0.0.0.0:8889
+
+  # 兜底: 日志输出,方便本地调试
+  debug:
+    verbosity: basic
+
+service:
+  telemetry:
+    metrics:
+      address: 0.0.0.0:8888
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [otlp/jaeger, debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]
