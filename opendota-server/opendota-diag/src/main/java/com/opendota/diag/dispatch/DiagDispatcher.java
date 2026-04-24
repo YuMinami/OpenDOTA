@@ -5,8 +5,8 @@ import com.opendota.common.envelope.DiagMessage;
 import com.opendota.common.envelope.Operator;
 import com.opendota.diag.channel.ChannelContext;
 import com.opendota.diag.channel.ChannelManager;
-import com.opendota.diag.exception.DispatchException;
-import com.opendota.diag.exception.ErrorCodes;
+import com.opendota.diag.web.ApiError;
+import com.opendota.diag.web.BusinessException;
 import com.opendota.mqtt.publisher.MqttPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -58,7 +58,7 @@ public class DiagDispatcher {
      */
     public String dispatchSingleCmd(String channelId, String type, String reqData, Integer timeoutMs, Operator operator) {
         ChannelContext ctx = channelManager.get(channelId)
-                .orElseThrow(() -> new DispatchException(ErrorCodes.CHANNEL_NOT_FOUND,
+                .orElseThrow(() -> new BusinessException(ApiError.E40401,
                         "channel 不存在或已关闭: " + channelId));
 
         String resolvedType = type == null || type.isBlank() ? "raw_uds" : type;
@@ -92,7 +92,7 @@ public class DiagDispatcher {
     /**
      * 下发任务取消。v1.4 A2:当 {@code force=true} 且目标通道正在执行 {@code macro_data_transfer}
      * 或 {@code macro_security} 半程时,**一律拒绝**(无 admin 强制开关),抛
-     * {@link DispatchException}(code=40305)。
+     * {@link BusinessException}(code=40305)。
      *
      * @param vin       目标车辆 VIN
      * @param taskId    要取消的任务 ID
@@ -111,8 +111,8 @@ public class DiagDispatcher {
                         operator == null ? "system" : operator.id(),
                         operator == null ? null : operator.role(),
                         taskId, channelId, ctx.getExecutingMacroType());
-                throw new DispatchException(
-                        ErrorCodes.NON_INTERRUPTIBLE_MACRO,
+                throw new BusinessException(
+                        ApiError.E40305,
                         "任务 " + taskId + " 正在执行不可中断宏 " + ctx.getExecutingMacroType()
                                 + ";v1.4 A2 一律拒绝 force_cancel,请等待宏自然完成后重试"
                 );

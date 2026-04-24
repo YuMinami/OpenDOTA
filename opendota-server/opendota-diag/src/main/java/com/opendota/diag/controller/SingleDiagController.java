@@ -1,11 +1,10 @@
 package com.opendota.diag.controller;
 
 import com.opendota.common.envelope.Operator;
-import com.opendota.diag.api.ApiResponse;
 import com.opendota.diag.api.OperatorContextResolver;
 import com.opendota.diag.dispatch.DiagDispatcher;
-import com.opendota.diag.exception.DispatchException;
-import com.opendota.diag.exception.ErrorCodes;
+import com.opendota.diag.web.ApiError;
+import com.opendota.diag.web.BusinessException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -43,24 +42,24 @@ public class SingleDiagController {
     }
 
     @PostMapping("/single")
-    public ApiResponse<Map<String, String>> single(@RequestBody SingleCmdRequest req,
-                                                    HttpServletRequest http) {
+    public Map<String, String> single(@RequestBody SingleCmdRequest req,
+                                      HttpServletRequest http) {
         validate(req);
         Operator operator = operatorResolver.resolve(http);
         String msgId = dispatcher.dispatchSingleCmd(
                 req.channelId(), req.type(), req.reqData(), req.timeoutMs(), operator);
-        return ApiResponse.ok(Map.of("msgId", msgId));
+        return Map.of("msgId", msgId);
     }
 
     private static void validate(SingleCmdRequest req) {
         if (req == null) {
-            throw new DispatchException(ErrorCodes.BAD_REQUEST, "请求 body 必填");
+            throw new BusinessException(ApiError.E40001, "请求 body 必填");
         }
         if (req.channelId() == null || req.channelId().isBlank()) {
-            throw new DispatchException(ErrorCodes.BAD_REQUEST, "channelId 必填");
+            throw new BusinessException(ApiError.E40001, "channelId 必填");
         }
         if (req.reqData() == null || req.reqData().isBlank()) {
-            throw new DispatchException(ErrorCodes.BAD_REQUEST, "reqData 必填(UDS PDU hex)");
+            throw new BusinessException(ApiError.E40001, "reqData 必填(UDS PDU hex)");
         }
     }
 
