@@ -30,7 +30,9 @@ class DiagTraceFilterTest {
 
     private MockMvc mockMvc;
     private ListAppender<ILoggingEvent> appender;
+    private ListAppender<ILoggingEvent> filterAppender;
     private Logger probeLogger;
+    private Logger filterLogger;
 
     @BeforeEach
     void setUp() {
@@ -38,6 +40,10 @@ class DiagTraceFilterTest {
         appender = new ListAppender<>();
         appender.start();
         probeLogger.addAppender(appender);
+        filterLogger = (Logger) LoggerFactory.getLogger(DiagTraceFilter.class);
+        filterAppender = new ListAppender<>();
+        filterAppender.start();
+        filterLogger.addAppender(filterAppender);
 
         mockMvc = MockMvcBuilders.standaloneSetup(new ProbeController())
                 .addFilters(new DiagTraceFilter())
@@ -48,6 +54,8 @@ class DiagTraceFilterTest {
     void tearDown() {
         probeLogger.detachAppender(appender);
         appender.stop();
+        filterLogger.detachAppender(filterAppender);
+        filterAppender.stop();
         MDC.clear();
     }
 
@@ -68,6 +76,7 @@ class DiagTraceFilterTest {
         assertEquals("operator-1", mdc.get("operatorId"));
         assertEquals("tenant-1", mdc.get("tenantId"));
         assertEquals("ticket-1", mdc.get("ticketId"));
+        assertEquals("12345678901234567890123456789012", filterEvent().getMDCPropertyMap().get("traceId"));
 
         assertNull(MDC.get("traceId"));
         assertNull(MDC.get("operatorId"));
@@ -103,6 +112,14 @@ class DiagTraceFilterTest {
     private ILoggingEvent singleProbeEvent() {
         List<ILoggingEvent> events = appender.list.stream()
                 .filter(event -> "probe controller reached".equals(event.getFormattedMessage()))
+                .toList();
+        assertEquals(1, events.size());
+        return events.getFirst();
+    }
+
+    private ILoggingEvent filterEvent() {
+        List<ILoggingEvent> events = filterAppender.list.stream()
+                .filter(event -> event.getFormattedMessage().startsWith("HTTP GET /probe/log"))
                 .toList();
         assertEquals(1, events.size());
         return events.getFirst();

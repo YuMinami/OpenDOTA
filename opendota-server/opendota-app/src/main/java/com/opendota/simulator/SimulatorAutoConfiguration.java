@@ -8,6 +8,7 @@ import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -34,6 +35,11 @@ public class SimulatorAutoConfiguration {
         return new CanMockResponder();
     }
 
+    @Bean
+    public SimulatorSecurityAuditRepository simulatorSecurityAuditRepository(JdbcTemplate jdbcTemplate) {
+        return new SimulatorSecurityAuditRepository(jdbcTemplate);
+    }
+
     @Bean(destroyMethod = "stop")
     @ConditionalOnProperty(prefix = "opendota.simulator", name = "doip-enabled", havingValue = "true",
             matchIfMissing = true)
@@ -50,6 +56,7 @@ public class SimulatorAutoConfiguration {
     public SimulatorLifecycle simulatorLifecycle(
             SimulatorProperties props,
             CanMockResponder canResponder,
+            SimulatorSecurityAuditRepository auditRepository,
             ObjectProvider<ObjectMapper> mapperProvider) {
 
         ObjectMapper mapper = mapperProvider.getIfAvailable(ObjectMapper::new);
@@ -58,7 +65,7 @@ public class SimulatorAutoConfiguration {
             log.warn("opendota.simulator.enabled=true 但未配置 vehicles 列表;模拟器空跑");
         }
         for (SimulatorProperties.VehicleProfile profile : props.getVehicles()) {
-            MqttVehicleSimulator sim = new MqttVehicleSimulator(props, profile, canResponder, mapper);
+            MqttVehicleSimulator sim = new MqttVehicleSimulator(props, profile, canResponder, auditRepository, mapper);
             simulators.add(sim);
         }
         return new SimulatorLifecycle(simulators);

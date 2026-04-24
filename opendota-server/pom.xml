@@ -39,6 +39,7 @@
         <maven.compiler.source>21</maven.compiler.source>
         <maven.compiler.target>21</maven.compiler.target>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <jacoco.version>0.8.12</jacoco.version>
 
         <!-- 第三方依赖版本 -->
         <paho.mqtt.version>1.2.5</paho.mqtt.version>
@@ -174,6 +175,19 @@
         </profile>
         <profile>
             <id>conformance</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <systemPropertyVariables>
+                                <opendota.conformance.enabled>true</opendota.conformance.enabled>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
     </profiles>
 

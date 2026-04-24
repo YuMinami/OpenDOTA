@@ -18,7 +18,9 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -49,21 +51,26 @@ import java.util.concurrent.ThreadLocalRandom;
 public class MqttVehicleSimulator implements MqttCallback {
 
     private static final Logger log = LoggerFactory.getLogger(MqttVehicleSimulator.class);
+    private static final long MAX_ACCEPTABLE_CLOCK_SKEW_MS = 300_000L;
 
     private final SimulatorProperties props;
     private final SimulatorProperties.VehicleProfile profile;
     private final CanMockResponder canResponder;
+    private final SimulatorSecurityAuditRepository auditRepository;
     private final ObjectMapper mapper;
+    private final Set<String> seenMsgIds = ConcurrentHashMap.newKeySet();
 
     private MqttClient mqttClient;
 
     public MqttVehicleSimulator(SimulatorProperties props,
                                 SimulatorProperties.VehicleProfile profile,
                                 CanMockResponder canResponder,
+                                SimulatorSecurityAuditRepository auditRepository,
                                 ObjectMapper mapper) {
         this.props = props;
         this.profile = profile;
         this.canResponder = canResponder;
+        this.auditRepository = auditRepository;
         this.mapper = mapper;
     }
 
@@ -143,8 +150,22 @@ public class MqttVehicleSimulator implements MqttCallback {
         try {
             JsonNode env = mapper.readTree(message.getPayload());
             DiagAction act = DiagAction.of(env.get("act").asText());
+            String msgId = env.path("msgId").asText();
             log.info("📨 simulator vin={} 收到 C2V: topic={} act={} msgId={}",
-                    profile.getVin(), topic, act.wireName(), env.get("msgId").asText());
+                    profile.getVin(), topic, act.wireName(), msgId);
+
+            String rejectAction = envelopeRejectAction(env);
+            if (rejectAction != null) {
+                auditRepository.recordEnvelopeRejected(profile, env, rejectAction);
+                log.warn("simulator vin={} 拒绝 C2V msgId={} action={} reason={}",
+                        profile.getVin(), msgId, act.wireName(), rejectAction);
+                return;
+            }
+            if (!markFirstSeen(msgId)) {
+                log.info("simulator vin={} 幂等忽略重复 msgId={} act={}",
+                        profile.getVin(), msgId, act.wireName());
+                return;
+            }
 
             simulateLatency();
 
@@ -415,5 +436,37 @@ public class MqttVehicleSimulator implements MqttCallback {
 
     public String getVin() {
         return profile.getVin();
+    }
+
+    private String envelopeRejectAction(JsonNode env) {
+        JsonNode operator = env.get("operator");
+        if (operator == null || operator.isNull()) {
+            return "SECURITY_VIOLATION";
+        }
+        long timestamp = env.path("timestamp").asLong(Long.MIN_VALUE);
+        if (timestamp == Long.MIN_VALUE
+                || Math.abs(System.currentTimeMillis() - timestamp) > MAX_ACCEPTABLE_CLOCK_SKEW_MS) {
+            return "STALE_TIMESTAMP";
+        }
+        String operatorTenantId = textOrNull(operator.get("tenantId"));
+        if (operatorTenantId == null || !profile.getTenantId().equals(operatorTenantId)) {
+            return "TENANT_MISMATCH";
+        }
+        return null;
+    }
+
+    private boolean markFirstSeen(String msgId) {
+        if (msgId == null || msgId.isBlank()) {
+            return true;
+        }
+        return seenMsgIds.add(msgId);
+    }
+
+    private static String textOrNull(JsonNode node) {
+        if (node == null || node.isNull()) {
+            return null;
+        }
+        String text = node.asText();
+        return text == null || text.isBlank() ? null : text;
     }
 }

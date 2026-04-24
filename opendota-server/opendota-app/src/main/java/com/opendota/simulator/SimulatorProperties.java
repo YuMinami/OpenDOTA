@@ -75,6 +75,9 @@ public class SimulatorProperties {
         /** 17 位 VIN,与 MQTT clientId / Topic 中的 VIN 段一致。 */
         private String vin;
 
+        /** 模拟车端证书中的租户标识(对应证书 O 字段),默认 default-tenant。 */
+        private String tenantId = "default-tenant";
+
         /** 诊断仪工位 ID,DoIP 场景承载(可空)。 */
         private String workstationId;
 
@@ -86,6 +89,9 @@ public class SimulatorProperties {
 
         public String getVin() { return vin; }
         public void setVin(String vin) { this.vin = vin; }
+
+        public String getTenantId() { return tenantId; }
+        public void setTenantId(String tenantId) { this.tenantId = tenantId; }
 
         public String getWorkstationId() { return workstationId; }
         public void setWorkstationId(String workstationId) { this.workstationId = workstationId; }

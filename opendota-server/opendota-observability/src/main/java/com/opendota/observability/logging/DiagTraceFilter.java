@@ -39,11 +39,14 @@ public class DiagTraceFilter extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response,
                                     FilterChain filterChain) throws ServletException, IOException {
         Map<String, String> previous = MDC.getCopyOfContextMap();
-        bindHttpContext(request);
+        HttpMdcContext context = resolveHttpContext(request);
+        apply(context);
         long start = System.nanoTime();
         try {
             filterChain.doFilter(request, response);
         } finally {
+            // 运行时链路中其它过滤器/观测组件可能改写或清空 MDC,这里在输出访问日志前恢复本请求上下文。
+            apply(context);
             long durationMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
             log.info("HTTP {} {} status={} durationMs={} remoteAddr={}",
                     request.getMethod(),
@@ -55,15 +58,24 @@ public class DiagTraceFilter extends OncePerRequestFilter {
         }
     }
 
-    private void bindHttpContext(HttpServletRequest request) {
-        MDC.put(DiagMdcKeys.TRACE_ID,
-                TraceparentUtils.extractOrGenerateTraceId(request.getHeader(HDR_TRACEPARENT)));
-        MDC.put(DiagMdcKeys.MSG_ID, DiagMdcKeys.NO_VALUE);
-        MDC.put(DiagMdcKeys.VIN, DiagMdcKeys.NO_VALUE);
-        MDC.put(DiagMdcKeys.OPERATOR_ID, operatorIdOf(request));
-        MDC.put(DiagMdcKeys.TENANT_ID, tenantIdOf(request));
-        MDC.put(DiagMdcKeys.TICKET_ID,
-                DiagMdcKeys.dashIfBlank(request.getHeader(HDR_TICKET_ID)));
+    private HttpMdcContext resolveHttpContext(HttpServletRequest request) {
+        return new HttpMdcContext(
+                TraceparentUtils.extractOrGenerateTraceId(request.getHeader(HDR_TRACEPARENT)),
+                DiagMdcKeys.NO_VALUE,
+                DiagMdcKeys.NO_VALUE,
+                operatorIdOf(request),
+                tenantIdOf(request),
+                DiagMdcKeys.dashIfBlank(request.getHeader(HDR_TICKET_ID))
+        );
+    }
+
+    private void apply(HttpMdcContext context) {
+        MDC.put(DiagMdcKeys.TRACE_ID, context.traceId());
+        MDC.put(DiagMdcKeys.MSG_ID, context.msgId());
+        MDC.put(DiagMdcKeys.VIN, context.vin());
+        MDC.put(DiagMdcKeys.OPERATOR_ID, context.operatorId());
+        MDC.put(DiagMdcKeys.TENANT_ID, context.tenantId());
+        MDC.put(DiagMdcKeys.TICKET_ID, context.ticketId());
     }
 
     private static String operatorIdOf(HttpServletRequest request) {
@@ -89,5 +101,14 @@ public class DiagTraceFilter extends OncePerRequestFilter {
         if (previous != null && !previous.isEmpty()) {
             MDC.setContextMap(previous);
         }
+    }
+
+    private record HttpMdcContext(
+            String traceId,
+            String msgId,
+            String vin,
+            String operatorId,
+            String tenantId,
+            String ticketId) {
     }
 }
