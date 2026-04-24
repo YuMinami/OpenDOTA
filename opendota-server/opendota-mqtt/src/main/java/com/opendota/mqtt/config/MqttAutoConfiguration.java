@@ -1,13 +1,20 @@
 package com.opendota.mqtt.config;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.opendota.common.envelope.EnvelopeReader;
+import com.opendota.common.envelope.EnvelopeWriter;
 import com.opendota.mqtt.client.CloudMqttClientFactory;
-import com.opendota.mqtt.client.MqttPublisher;
-import com.opendota.mqtt.client.MqttSubscriber;
 import com.opendota.mqtt.codec.EnvelopeCodec;
-import com.opendota.mqtt.listener.V2cListener;
+import com.opendota.mqtt.publisher.MqttPublishMetrics;
+import com.opendota.mqtt.publisher.MqttPublisher;
+import com.opendota.mqtt.subscriber.MdcBinder;
+import com.opendota.mqtt.subscriber.MqttSubscriber;
+import com.opendota.mqtt.subscriber.V2CHandler;
+import com.opendota.mqtt.subscriber.V2CMessageDispatcher;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.slf4j.Logger;
@@ -18,6 +25,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 
+import java.util.List;
+
 /**
  * opendota-mqtt 自动装配。
  *
@@ -25,10 +34,12 @@ import org.springframework.context.annotation.Bean;
  *
  * <p>装配顺序:
  * <ol>
- *   <li>{@link EnvelopeCodec} —— 只依赖 {@link ObjectMapper}</li>
+ *   <li>{@link EnvelopeReader} / {@link EnvelopeWriter} —— Envelope 新读写入口</li>
+ *   <li>{@link EnvelopeCodec} —— 兼容层,仅供旧调用点过渡</li>
  *   <li>{@link MqttClient} —— 连 broker,抛异常会让应用启动失败(fail-fast)</li>
  *   <li>{@link MqttPublisher} —— 无状态发布器</li>
- *   <li>{@link MqttSubscriber} —— 收集所有 {@link V2cListener} 构造,订阅在 Lifecycle 的 @PostConstruct 里完成</li>
+ *   <li>{@link V2CMessageDispatcher} —— 收集所有 {@link V2CHandler} 并负责隔离 handler 异常</li>
+ *   <li>{@link MqttSubscriber} —— 订阅 topic 并串联 EnvelopeReader / MdcBinder / Dispatcher</li>
  *   <li>{@link MqttLifecycle} —— 管 start / stop,与 Spring 容器生命周期同步</li>
  * </ol>
  */
@@ -40,8 +51,30 @@ public class MqttAutoConfiguration {
     private static final Logger log = LoggerFactory.getLogger(MqttAutoConfiguration.class);
 
     @Bean
-    public EnvelopeCodec envelopeCodec(ObjectProvider<ObjectMapper> mapperProvider) {
-        return new EnvelopeCodec(mapperProvider.getIfAvailable(ObjectMapper::new));
+    public EnvelopeReader envelopeReader(ObjectProvider<ObjectMapper> mapperProvider) {
+        return new EnvelopeReader(mapperProvider.getIfAvailable(ObjectMapper::new));
+    }
+
+    @Bean
+    public EnvelopeWriter envelopeWriter(ObjectProvider<ObjectMapper> mapperProvider) {
+        return new EnvelopeWriter(mapperProvider.getIfAvailable(ObjectMapper::new));
+    }
+
+    @Bean
+    @SuppressWarnings("deprecation")
+    public EnvelopeCodec envelopeCodec(ObjectProvider<ObjectMapper> mapperProvider,
+                                       EnvelopeReader envelopeReader,
+                                       EnvelopeWriter envelopeWriter) {
+        return new EnvelopeCodec(
+                mapperProvider.getIfAvailable(ObjectMapper::new),
+                envelopeReader,
+                envelopeWriter
+        );
+    }
+
+    @Bean
+    public MqttPublishMetrics mqttPublishMetrics(ObjectProvider<MeterRegistry> registryProvider) {
+        return new MqttPublishMetrics(registryProvider.getIfAvailable(SimpleMeterRegistry::new));
     }
 
     /**
@@ -55,14 +88,25 @@ public class MqttAutoConfiguration {
     }
 
     @Bean
-    public MqttPublisher mqttPublisher(MqttClient client, EnvelopeCodec codec, MqttProperties props) {
-        return new MqttPublisher(client, codec, props);
+    public MqttPublisher mqttPublisher(MqttClient client, EnvelopeWriter envelopeWriter,
+                                       MqttProperties props, MqttPublishMetrics metrics) {
+        return new MqttPublisher(client, envelopeWriter, props, metrics);
     }
 
     @Bean
-    public MqttSubscriber mqttSubscriber(MqttClient client, EnvelopeCodec codec, MqttProperties props,
-                                          ObjectProvider<V2cListener> listeners) {
-        return new MqttSubscriber(client, codec, props, listeners.stream().toList());
+    public MdcBinder mdcBinder() {
+        return new MdcBinder();
+    }
+
+    @Bean
+    public V2CMessageDispatcher v2cMessageDispatcher(ObjectProvider<V2CHandler> handlers) {
+        return new V2CMessageDispatcher(List.copyOf(handlers.orderedStream().toList()));
+    }
+
+    @Bean
+    public MqttSubscriber mqttSubscriber(MqttClient client, EnvelopeReader envelopeReader, MqttProperties props,
+                                         V2CMessageDispatcher dispatcher, MdcBinder mdcBinder) {
+        return new MqttSubscriber(client, envelopeReader, props, dispatcher, mdcBinder);
     }
 
     @Bean

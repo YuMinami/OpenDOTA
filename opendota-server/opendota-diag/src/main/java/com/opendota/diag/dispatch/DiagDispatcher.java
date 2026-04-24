@@ -7,7 +7,7 @@ import com.opendota.diag.channel.ChannelContext;
 import com.opendota.diag.channel.ChannelManager;
 import com.opendota.diag.exception.DispatchException;
 import com.opendota.diag.exception.ErrorCodes;
-import com.opendota.mqtt.client.MqttPublisher;
+import com.opendota.mqtt.publisher.MqttPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;

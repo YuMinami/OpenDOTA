@@ -1,0 +1,158 @@
+{
+  "vectors": [
+    {
+      "id": "TV-Hash-01",
+      "payload": {
+        "payloadType": "batch",
+        "ecuName": "VCU",
+        "ecuScope": ["VCU"],
+        "transport": "UDS_ON_CAN",
+        "txId": "0x7e0",
+        "rxId": "0x7e8",
+        "steps": [
+          {
+            "seqId": 1,
+            "type": "raw_uds",
+            "data": "220101"
+          }
+        ]
+      },
+      "expectedHash": "327dd1b314be5141afec9727ab45ae338681d607fe25a8d42a8c42b47c3edf29"
+    },
+    {
+      "id": "TV-Hash-02",
+      "payload": {
+        "payloadType": "batch",
+        "ecuName": "VCU",
+        "ecuScope": ["VCU"],
+        "transport": "UDS_ON_CAN",
+        "txId": "0x7e0",
+        "rxId": "0x7e8",
+        "steps": [
+          {
+            "seqId": 1,
+            "type": "raw_uds",
+            "data": "220101"
+          }
+        ]
+      },
+      "equivalentPayload": {
+        "payloadType": "batch",
+        "ecuName": "VCU",
+        "ecuScope": ["VCU"],
+        "txId": "0x7e0",
+        "rxId": "0x7e8",
+        "steps": [
+          {
+            "seqId": 1,
+            "type": "raw_uds",
+            "data": "220101"
+          }
+        ]
+      },
+      "expectedHash": "327dd1b314be5141afec9727ab45ae338681d607fe25a8d42a8c42b47c3edf29"
+    },
+    {
+      "id": "TV-Hash-03",
+      "payload": {
+        "payloadType": "batch",
+        "ecuName": "VCU",
+        "ecuScope": ["BMS", "VCU"],
+        "txId": "0x7e0",
+        "rxId": "0x7e8",
+        "steps": [
+          {
+            "seqId": 1,
+            "type": "raw_uds",
+            "data": "220101"
+          }
+        ]
+      },
+      "equivalentPayload": {
+        "payloadType": "batch",
+        "ecuName": "VCU",
+        "ecuScope": ["VCU", "BMS"],
+        "txId": "0x7e0",
+        "rxId": "0x7e8",
+        "steps": [
+          {
+            "seqId": 1,
+            "type": "raw_uds",
+            "data": "220101"
+          }
+        ]
+      },
+      "expectedHash": "2d84019c7d5755089a59799d0ba17a961f2e18fb334c92c4d973013050132c1b"
+    },
+    {
+      "id": "TV-Hash-04",
+      "payload": {
+        "payloadType": "batch",
+        "ecuName": "VCU",
+        "ecuScope": ["VCU"],
+        "txId": "0X7E0",
+        "rxId": "0X7E8",
+        "steps": [
+          {
+            "seqId": 1,
+            "type": "raw_uds",
+            "data": "22F190"
+          }
+        ]
+      },
+      "equivalentPayload": {
+        "payloadType": "batch",
+        "ecuName": "VCU",
+        "ecuScope": ["VCU"],
+        "txId": "0x7e0",
+        "rxId": "0x7e8",
+        "steps": [
+          {
+            "seqId": 1,
+            "type": "raw_uds",
+            "data": "22f190"
+          }
+        ]
+      },
+      "expectedHash": "bbefebc004af6d7f29b787be8225006cf1b2e47f6eb567bd51b26fc6e0601680"
+    },
+    {
+      "id": "TV-Hash-05",
+      "payload": {
+        "payloadType": "batch",
+        "ecuName": "VCU",
+        "ecuScope": ["VCU"],
+        "txId": "0x7e0",
+        "rxId": "0x7e8",
+        "steps": [
+          {
+            "seqId": 1,
+            "type": "macro_routine_wait",
+            "macroParams": {
+              "pollIntervalMs": 120.0,
+              "maxRetry": 3
+            }
+          }
+        ]
+      },
+      "equivalentPayload": {
+        "payloadType": "batch",
+        "ecuName": "VCU",
+        "ecuScope": ["VCU"],
+        "txId": "0x7e0",
+        "rxId": "0x7e8",
+        "steps": [
+          {
+            "seqId": 1,
+            "type": "macro_routine_wait",
+            "macroParams": {
+              "pollIntervalMs": 120,
+              "maxRetry": 3
+            }
+          }
+        ]
+      },
+      "expectedHash": "946ebfed169e4f223f6622b910d777dd3a9e262df94ecf54b2de1468abc5aad4"
+    }
+  ]
+}

@@ -69,7 +69,10 @@ public enum DiagAction {
 
     // ============== 信号白名单(§8.3.2.1) ==============
     SIGNAL_CATALOG_PUSH("signal_catalog_push"),
-    SIGNAL_CATALOG_ACK("signal_catalog_ack");
+    SIGNAL_CATALOG_ACK("signal_catalog_ack"),
+
+    // ============== 容错兜底 ==============
+    UNKNOWN("unknown");
 
     private final String wireName;
 
@@ -90,5 +93,17 @@ public enum DiagAction {
             }
         }
         throw new IllegalArgumentException("未知 DiagAction: " + wireName);
+    }
+
+    public static DiagAction ofOrUnknown(String wireName) {
+        if (wireName == null || wireName.isBlank()) {
+            return UNKNOWN;
+        }
+        for (DiagAction a : values()) {
+            if (a.wireName.equals(wireName)) {
+                return a;
+            }
+        }
+        return UNKNOWN;
     }
 }

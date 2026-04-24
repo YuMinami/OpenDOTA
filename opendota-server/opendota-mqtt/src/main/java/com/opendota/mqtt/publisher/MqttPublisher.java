@@ -1,9 +1,10 @@
-package com.opendota.mqtt.client;
+package com.opendota.mqtt.publisher;
 
 import com.opendota.common.envelope.DiagAction;
 import com.opendota.common.envelope.DiagMessage;
-import com.opendota.mqtt.codec.EnvelopeCodec;
+import com.opendota.common.envelope.EnvelopeWriter;
 import com.opendota.mqtt.config.MqttProperties;
+import org.eclipse.paho.client.mqttv3.IMqttDeliveryToken;
 import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttException;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
@@ -13,8 +14,8 @@ import org.slf4j.LoggerFactory;
 /**
  * C2V 报文发布器。
  *
- * <p>根据 {@link DiagMessage#act()} 自动推导 Topic scene 段(协议 §2.2),统一走 QoS 1。
- * 调用方只需要构造 {@link DiagMessage} 再 {@link #publish(DiagMessage)}。
+ * <p>根据 {@link DiagMessage#act()} 自动推导 Topic scene 段(协议 §2.2),默认走 QoS 1。
+ * 对 QoS 1 发布显式等待 PUBACK,确保方法返回前 broker 已确认接收。
  *
  * <p>禁止在这里做业务校验、权限校验、审计;这些属于 {@code opendota-diag} / {@code opendota-security} 层。
  * 本类只负责"把信封塞进 MQTT 的邮筒"——知道邮筒在哪、信封长什么样,不管信里写了什么。
@@ -24,48 +25,52 @@ public class MqttPublisher {
     private static final Logger log = LoggerFactory.getLogger(MqttPublisher.class);
 
     private final MqttClient client;
-    private final EnvelopeCodec codec;
+    private final EnvelopeWriter envelopeWriter;
     private final MqttProperties props;
+    private final MqttPublishMetrics metrics;
 
-    public MqttPublisher(MqttClient client, EnvelopeCodec codec, MqttProperties props) {
+    public MqttPublisher(MqttClient client, EnvelopeWriter envelopeWriter,
+                         MqttProperties props, MqttPublishMetrics metrics) {
         this.client = client;
-        this.codec = codec;
+        this.envelopeWriter = envelopeWriter;
         this.props = props;
+        this.metrics = metrics;
     }
 
     /**
      * 发布一条 C2V envelope。Topic 按 {@code <prefix>/cmd/<scene>/<vin>} 推导。
      *
-     * @throws IllegalStateException MQTT 底层故障(连接丢失、QoS 握手失败等)
+     * @throws MqttPublishException MQTT 底层故障(连接丢失、QoS 握手失败等)
      */
     public void publish(DiagMessage<?> env) {
-        String topic = resolveTopic(env);
-        byte[] bytes = codec.serialize(env);
-        MqttMessage msg = new MqttMessage(bytes);
-        msg.setQos(props.getDefaultQos());
-        try {
-            client.publish(topic, msg);
-            log.info("📤 C2V publish topic={} act={} msgId={} vin={} bytes={}",
-                    topic, env.act().wireName(), env.msgId(), env.vin(), bytes.length);
-        } catch (MqttException e) {
-            log.error("MQTT publish 失败 topic={} act={} msgId={}",
-                    topic, env.act().wireName(), env.msgId(), e);
-            throw new IllegalStateException("MQTT publish 失败: " + topic, e);
-        }
+        publish(resolveTopic(env), env, props.getDefaultQos());
     }
 
     /**
-     * 手动指定 Topic 发布,兜底用(例如 admin 场景需要打 retained 消息)。大部分业务不应该调用这个。
+     * 手动指定 Topic + QoS 发布。QoS 1 会显式等待 PUBACK。
      */
-    public void publishToTopic(String topic, DiagMessage<?> env) {
-        byte[] bytes = codec.serialize(env);
+    public void publish(String topic, DiagMessage<?> env, int qos) {
+        byte[] bytes = envelopeWriter.write(env);
         MqttMessage msg = new MqttMessage(bytes);
-        msg.setQos(props.getDefaultQos());
+        msg.setQos(qos);
+        long startNanos = System.nanoTime();
         try {
-            client.publish(topic, msg);
-            log.info("📤 C2V publish(custom topic) topic={} act={} msgId={}", topic, env.act().wireName(), env.msgId());
+            if (!client.isConnected()) {
+                throw new MqttPublishException("MQTT client 未连接: " + topic);
+            }
+            IMqttDeliveryToken token = client.getTopic(topic).publish(msg);
+            token.waitForCompletion();
+            metrics.recordSuccess(System.nanoTime() - startNanos);
+            log.info("C2V publish topic={} act={} msgId={} vin={} qos={} bytes={}",
+                    topic, env.act().wireName(), env.msgId(), env.vin(), qos, bytes.length);
         } catch (MqttException e) {
-            throw new IllegalStateException("MQTT publish 失败: " + topic, e);
+            metrics.recordFailure(System.nanoTime() - startNanos);
+            log.error("MQTT publish 失败 topic={} act={} msgId={}",
+                    topic, env.act().wireName(), env.msgId(), e);
+            throw new MqttPublishException("MQTT publish 失败: " + topic, e);
+        } catch (RuntimeException e) {
+            metrics.recordFailure(System.nanoTime() - startNanos);
+            throw e;
         }
     }
 
@@ -83,7 +88,7 @@ public class MqttPublisher {
             case SCRIPT_CMD -> "script";
             case QUEUE_QUERY, QUEUE_DELETE, QUEUE_PAUSE, QUEUE_RESUME -> "queue";
             case TASK_PAUSE, TASK_RESUME, TASK_CANCEL, TASK_QUERY -> "task";
-            case SIGNAL_CATALOG_PUSH -> "signal";
+            case SIGNAL_CATALOG_PUSH -> "signal-catalog";
             case TIME_SYNC_REQUEST -> "time";
             default -> throw new IllegalArgumentException(
                     "act=" + act.wireName() + " 不是合法的 C2V 动作,无 topic 映射");
