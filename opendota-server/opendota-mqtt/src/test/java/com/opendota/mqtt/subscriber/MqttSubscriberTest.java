@@ -71,6 +71,7 @@ class MqttSubscriberTest {
             assertEquals("LSVWA234567890123", MDC.get("vin"));
             assertEquals("operator-1", MDC.get("operatorId"));
             assertEquals("tenant-1", MDC.get("tenantId"));
+            assertEquals("ticket-1", MDC.get("ticketId"));
             return null;
         }).when(dispatcher).dispatch(eq("dota/v1/resp/single/LSVWA234567890123"), any());
 
@@ -88,6 +89,7 @@ class MqttSubscriberTest {
         assertNull(MDC.get("vin"));
         assertNull(MDC.get("operatorId"));
         assertNull(MDC.get("tenantId"));
+        assertNull(MDC.get("ticketId"));
     }
 
     @Test
@@ -107,7 +109,8 @@ class MqttSubscriberTest {
                   "operator":{
                     "id":"operator-1",
                     "role":"admin",
-                    "tenantId":"tenant-1"
+                    "tenantId":"tenant-1",
+                    "ticketId":"ticket-1"
                   },
                   "traceparent":"00-12345678901234567890123456789012-1234567890123456-01",
                   "payload":{
