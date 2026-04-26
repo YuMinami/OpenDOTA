@@ -1,6 +1,7 @@
 package com.opendota.diag.web;
 
 import com.opendota.mqtt.publisher.MqttPublishException;
+import com.opendota.odx.service.OdxResourceNotFoundException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpStatus;
@@ -33,6 +34,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Object>> handleMqtt(MqttPublishException ex) {
         log.error("MQTT 下游异常: {}", ex.getMessage(), ex);
         return ResponseEntity.ok(ApiResponse.error(ApiError.E50301, ex.getMessage()));
+    }
+
+    @ExceptionHandler(OdxResourceNotFoundException.class)
+    public ResponseEntity<ApiResponse<Object>> handleOdxNotFound(OdxResourceNotFoundException ex) {
+        log.warn("ODX 资源不存在: {}", ex.getMessage());
+        return ResponseEntity.ok(ApiResponse.error(ApiError.E40401, ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

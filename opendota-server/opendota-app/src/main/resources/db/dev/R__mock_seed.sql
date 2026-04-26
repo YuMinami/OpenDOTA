@@ -45,10 +45,11 @@ INSERT INTO odx_vehicle_model (id, tenant_id, model_code, model_name, odx_versio
 VALUES (1, 'chery-hq', 'CHERY_EXEED', '奇瑞 星途瑶光', 'v1.0_mock');
 
 -- ECU
-INSERT INTO odx_ecu (id, model_id, ecu_code, ecu_name, tx_id, rx_id, protocol, sec_algo_ref) VALUES
-    (1, 1, 'VCU_BAS_V1', 'VCU 整车控制器',     '0x7E0',  '0x7E8',  'UDS_ON_CAN',  'Algo_Chery_VCU'),
-    (2, 1, 'GW_ETH_V1',  'GW 中央网关(以太网)', '0x0E80', '0x1010', 'UDS_ON_DOIP', NULL),
-    (3, 1, 'BMS_V1',     'BMS 电池管理系统',    '0x7E3',  '0x7EB',  'UDS_ON_CAN',  'Algo_Chery_BMS');
+-- gateway_chain(V3 迁移列):BMS 在 OBD2 总线下游,经 GW 网关路由,锁 BMS 必须同时锁 GW(REST §4.1.1)
+INSERT INTO odx_ecu (id, model_id, ecu_code, ecu_name, tx_id, rx_id, protocol, sec_algo_ref, gateway_chain) VALUES
+    (1, 1, 'VCU_BAS_V1', 'VCU 整车控制器',     '0x7E0',  '0x7E8',  'UDS_ON_CAN',  'Algo_Chery_VCU', '[]'::jsonb),
+    (2, 1, 'GW_ETH_V1',  'GW 中央网关(以太网)', '0x0E80', '0x1010', 'UDS_ON_DOIP', NULL,             '[]'::jsonb),
+    (3, 1, 'BMS_V1',     'BMS 电池管理系统',    '0x7E3',  '0x7EB',  'UDS_ON_CAN',  'Algo_Chery_BMS', '["GW"]'::jsonb);
 
 -- 诊断服务 Mock
 INSERT INTO odx_diag_service (id, ecu_id, service_code, sub_function, service_name, display_name, category, request_raw_hex, response_id_hex, macro_type, required_session) VALUES
