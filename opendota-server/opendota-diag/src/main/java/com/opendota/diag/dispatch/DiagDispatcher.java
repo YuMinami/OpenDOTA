@@ -131,42 +131,6 @@ public class DiagDispatcher {
         return env.msgId();
     }
 
-    // ============================================================
-    // 通道开通(协议 §4.2)
-    // ============================================================
-
-    /**
-     * 下发 channel_open 并登记通道上下文。注意:仅 MQTT 下发 + 本地登记,实际"通道已建立"由 V2C
-     * {@code channel_event opened} 回执决定;此处只是占位,允许 UI 马上返回 200。
-     *
-     * @return {@link OpenResult} 含 {@code channelId}(本地生成)和 {@code msgId}(envelope)
-     */
-    public OpenResult dispatchChannelOpen(String vin, String ecuName, java.util.List<String> ecuScope,
-                                           String transport, String txId, String rxId,
-                                           Integer globalTimeoutMs, boolean force, String preemptPolicy,
-                                           Operator operator) {
-        String channelId = "ch-" + UUID.randomUUID().toString().substring(0, 13);
-
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("channelId", channelId);
-        payload.put("ecuName", ecuName);
-        if (ecuScope != null && !ecuScope.isEmpty()) {
-            payload.put("ecuScope", ecuScope);
-        }
-        payload.put("transport", transport == null ? "UDS_ON_CAN" : transport);
-        payload.put("txId", txId);
-        payload.put("rxId", rxId);
-        payload.put("globalTimeoutMs", globalTimeoutMs == null ? 300_000 : globalTimeoutMs);
-        payload.put("force", force);
-        payload.put("preemptPolicy", preemptPolicy == null ? "wait" : preemptPolicy);
-
-        DiagMessage<Map<String, Object>> env =
-                DiagMessage.c2v(vin, DiagAction.CHANNEL_OPEN, operator, payload);
-
-        channelManager.register(channelId, vin, ecuName, ecuScope, operator);
-        publisher.publish(env);
-        return new OpenResult(channelId, env.msgId());
-    }
-
-    public record OpenResult(String channelId, String msgId) {}
+    // 通道生命周期(协议 §4.2 / §4.3)已迁移到
+    // {@link com.opendota.diag.channel.ChannelOpenService} / {@code ChannelCloseService}。
 }
