@@ -3,6 +3,7 @@ package com.opendota.diag.dispatch;
 import com.opendota.common.envelope.DiagAction;
 import com.opendota.common.envelope.DiagMessage;
 import com.opendota.common.envelope.Operator;
+import com.opendota.common.payload.single.SingleCmdPayload;
 import com.opendota.diag.channel.ChannelContext;
 import com.opendota.diag.channel.ChannelManager;
 import com.opendota.diag.web.ApiError;
@@ -14,7 +15,6 @@ import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
-import java.util.UUID;
 
 /**
  * 诊断下发分发器(架构 §3.1 + §3.2)。
@@ -57,32 +57,51 @@ public class DiagDispatcher {
      * @return 生成的 {@code msgId} —— 前端用它订阅 SSE {@code diag-result}
      */
     public String dispatchSingleCmd(String channelId, String type, String reqData, Integer timeoutMs, Operator operator) {
+        PreparedSingleCmd prepared = prepareSingleCmd(channelId, type, reqData, timeoutMs, operator);
+        publishPreparedSingleCmd(prepared);
+        return prepared.envelope().msgId();
+    }
+
+    /**
+     * 构建单步诊断 envelope,但不立即 publish。
+     *
+     * <p>Step 2.3 需要在真正发 MQTT 前先写 pending {@code diag_record};因此把
+     * "构造信封" 与 "发送信封" 拆开,由上层服务决定持久化顺序。
+     */
+    public PreparedSingleCmd prepareSingleCmd(String channelId, String type, String reqData,
+                                              Integer timeoutMs, Operator operator) {
         ChannelContext ctx = channelManager.get(channelId)
                 .orElseThrow(() -> new BusinessException(ApiError.E40401,
                         "channel 不存在或已关闭: " + channelId));
 
         String resolvedType = type == null || type.isBlank() ? "raw_uds" : type;
-        String cmdId = "cmd-" + UUID.randomUUID().toString().substring(0, 13);
+        String msgId = DiagMessage.newMsgId();
+        SingleCmdPayload payload = new SingleCmdPayload(msgId, channelId, resolvedType, reqData, timeoutMs);
+        DiagMessage<SingleCmdPayload> envelope = new DiagMessage<>(
+                msgId,
+                System.currentTimeMillis(),
+                ctx.getVin(),
+                DiagAction.SINGLE_CMD,
+                operator,
+                null,
+                payload);
+        return new PreparedSingleCmd(ctx, resolvedType, envelope);
+    }
 
-        Map<String, Object> payload = new LinkedHashMap<>();
-        payload.put("cmdId", cmdId);
-        payload.put("channelId", channelId);
-        payload.put("type", resolvedType);
-        payload.put("reqData", reqData);
-        payload.put("timeoutMs", timeoutMs == null ? 5000 : timeoutMs);
-
-        DiagMessage<Map<String, Object>> env =
-                DiagMessage.c2v(ctx.getVin(), DiagAction.SINGLE_CMD, operator, payload);
-
-        // 若这一步是宏调用,先标记到 ChannelContext,让 A2 guard 能看到
-        if (resolvedType.startsWith("macro_")) {
-            channelManager.markExecuting(channelId, cmdId, resolvedType);
+    public void publishPreparedSingleCmd(PreparedSingleCmd prepared) {
+        if (prepared.resolvedType().startsWith("macro_")) {
+            channelManager.markExecuting(
+                    prepared.envelope().payload().channelId(),
+                    prepared.envelope().payload().cmdId(),
+                    prepared.resolvedType());
         }
 
         log.info("dispatch single_cmd channelId={} cmdId={} type={} reqData={}",
-                channelId, cmdId, resolvedType, reqData);
-        publisher.publish(env);
-        return env.msgId();
+                prepared.envelope().payload().channelId(),
+                prepared.envelope().payload().cmdId(),
+                prepared.resolvedType(),
+                prepared.envelope().payload().reqData());
+        publisher.publish(prepared.envelope());
     }
 
     // ============================================================
@@ -133,4 +152,10 @@ public class DiagDispatcher {
 
     // 通道生命周期(协议 §4.2 / §4.3)已迁移到
     // {@link com.opendota.diag.channel.ChannelOpenService} / {@code ChannelCloseService}。
+
+    public record PreparedSingleCmd(
+            ChannelContext channelContext,
+            String resolvedType,
+            DiagMessage<SingleCmdPayload> envelope) {
+    }
 }

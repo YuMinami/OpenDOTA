@@ -5,6 +5,7 @@ import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.opendota.odx.entity.OdxDiagService;
 import com.opendota.odx.entity.OdxEcu;
+import com.opendota.odx.entity.OdxParamCodec;
 import com.opendota.odx.entity.OdxVehicleModel;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -100,6 +101,18 @@ public class OdxEcuRepositoryImpl implements OdxEcuRepository {
                 DIAG_SERVICE_MAPPER, ecuId);
     }
 
+    @Override
+    public List<OdxParamCodec> findParamCodecsByServiceId(long serviceId) {
+        return jdbc.query(
+                "SELECT id, service_id, param_name, display_name, byte_offset, bit_offset, "
+                        + "       bit_length, data_type, formula, unit, enum_mapping, "
+                        + "       min_value, max_value "
+                        + "FROM odx_param_codec "
+                        + "WHERE service_id = ? "
+                        + "ORDER BY byte_offset ASC, bit_offset ASC, id ASC",
+                PARAM_CODEC_MAPPER, serviceId);
+    }
+
     // ============================================================
     // RowMappers
     // ============================================================
@@ -142,6 +155,21 @@ public class OdxEcuRepositoryImpl implements OdxEcuRepository {
             rs.getString("macro_type"),
             getNullableBoolean(rs, "is_enabled"),
             getNullableBoolean(rs, "safety_critical"));
+
+    private static final RowMapper<OdxParamCodec> PARAM_CODEC_MAPPER = (rs, n) -> new OdxParamCodec(
+            rs.getLong("id"),
+            rs.getLong("service_id"),
+            rs.getString("param_name"),
+            rs.getString("display_name"),
+            rs.getInt("byte_offset"),
+            rs.getInt("bit_offset"),
+            rs.getInt("bit_length"),
+            rs.getString("data_type"),
+            rs.getString("formula"),
+            rs.getString("unit"),
+            rs.getString("enum_mapping"),
+            rs.getBigDecimal("min_value"),
+            rs.getBigDecimal("max_value"));
 
     private List<String> parseStringArray(ResultSet rs, String column) throws SQLException {
         String raw = rs.getString(column);

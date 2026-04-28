@@ -2,12 +2,15 @@ package com.opendota.odx.service;
 
 import com.opendota.odx.entity.OdxDiagService;
 import com.opendota.odx.entity.OdxEcu;
+import com.opendota.odx.entity.OdxParamCodec;
 import com.opendota.odx.entity.OdxVehicleModel;
 import com.opendota.odx.repository.OdxEcuRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -147,6 +150,57 @@ class OdxServiceTest {
                 .isInstanceOf(OdxResourceNotFoundException.class)
                 .hasMessageContaining("ABS")
                 .hasMessageContaining("CHERY_EXEED");
+    }
+
+    // ============== translateSingleResponse ==============
+
+    @Test
+    void translateSingleResponse_positiveShouldDecodeParameters() {
+        OdxVehicleModel model = new OdxVehicleModel(
+                1L, "chery-hq", "CHERY_EXEED", "奇瑞 星途瑶光", "v1.0_mock");
+        OdxEcu vcu = ecu(1L, "VCU 整车控制器", "0x7E0", "0x7E8", "UDS_ON_CAN", List.of());
+        OdxDiagService readTemp = diagService(102L, "运行数据", "读取电池温度", "0x22", "F112", "22F112");
+
+        when(repository.findVehicleModelByVin("LSVWA234567890123")).thenReturn(Optional.of(model));
+        when(repository.findEcuByName(1L, "VCU")).thenReturn(Optional.of(vcu));
+        when(repository.findServicesByEcuId(1L)).thenReturn(List.of(readTemp));
+        when(repository.findParamCodecsByServiceId(102L)).thenReturn(List.of(
+                new OdxParamCodec(
+                        1L, 102L, "BattTemp", "电池温度探针 A",
+                        3, 0, 8, "unsigned", "raw * 1 - 40", "°C",
+                        null, BigDecimal.valueOf(-40), BigDecimal.valueOf(120))));
+
+        Map<String, Object> translated = service.translateSingleResponse(
+                "LSVWA234567890123", "VCU", "22F112", "62F1123B");
+
+        assertThat(translated.get("translationType")).isEqualTo("positive");
+        assertThat(translated.get("serviceDisplayName")).isEqualTo("读取电池温度");
+        assertThat(translated.get("summaryText")).isEqualTo("读取电池温度: 电池温度探针 A=19°C");
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> parameters = (List<Map<String, Object>>) translated.get("parameters");
+        assertThat(parameters).hasSize(1);
+        assertThat(parameters.get(0).get("rawDecimal")).isEqualTo(59L);
+        assertThat(parameters.get(0).get("physicalValue")).isEqualTo(new BigDecimal("19"));
+    }
+
+    @Test
+    void translateSingleResponse_negativeShouldReturnNrcInfo() {
+        OdxVehicleModel model = new OdxVehicleModel(
+                1L, "chery-hq", "CHERY_EXEED", "奇瑞 星途瑶光", "v1.0_mock");
+        OdxEcu vcu = ecu(1L, "VCU 整车控制器", "0x7E0", "0x7E8", "UDS_ON_CAN", List.of());
+        OdxDiagService readVin = diagService(101L, "识别信息", "读取车辆识别码(VIN)", "0x22", "F190", "22F190");
+
+        when(repository.findVehicleModelByVin("LSVWA234567890123")).thenReturn(Optional.of(model));
+        when(repository.findEcuByName(1L, "VCU")).thenReturn(Optional.of(vcu));
+        when(repository.findServicesByEcuId(1L)).thenReturn(List.of(readVin));
+
+        Map<String, Object> translated = service.translateSingleResponse(
+                "LSVWA234567890123", "VCU", "22F190", "7F2222");
+
+        assertThat(translated.get("translationType")).isEqualTo("negative");
+        assertThat(translated.get("nrcCode")).isEqualTo("0x22");
+        assertThat(translated.get("nrcDisplayName")).isEqualTo("当前条件不满足");
+        assertThat(translated.get("summaryText")).isEqualTo("读取车辆识别码(VIN) 失败: 当前条件不满足");
     }
 
     // ============== helpers ==============

@@ -2,6 +2,7 @@ package com.opendota.odx.repository;
 
 import com.opendota.odx.entity.OdxDiagService;
 import com.opendota.odx.entity.OdxEcu;
+import com.opendota.odx.entity.OdxParamCodec;
 import com.opendota.odx.entity.OdxVehicleModel;
 
 import java.util.List;
@@ -41,4 +42,7 @@ public interface OdxEcuRepository {
 
     /** 按 ECU 列出所有诊断服务,实现层负责返回稳定排序(category ASC, id ASC)。 */
     List<OdxDiagService> findServicesByEcuId(long ecuId);
+
+    /** 查询某个诊断服务的参数解码规则(按字节偏移稳定排序)。 */
+    List<OdxParamCodec> findParamCodecsByServiceId(long serviceId);
 }

@@ -1,10 +1,7 @@
-package com.opendota.diag.controller;
+package com.opendota.diag.cmd;
 
 import com.opendota.common.envelope.Operator;
 import com.opendota.diag.api.OperatorContextResolver;
-import com.opendota.diag.dispatch.DiagDispatcher;
-import com.opendota.diag.web.ApiError;
-import com.opendota.diag.web.BusinessException;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -14,7 +11,7 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
 
 /**
- * 单步诊断指令下发(REST §4.3)。
+ * 单步诊断指令入口(REST §4.3)。
  *
  * <p>契约:
  * <pre>
@@ -27,40 +24,26 @@ import java.util.Map;
  *     { code:0, data:{ msgId:"..." } }
  * </pre>
  *
- * 全异步:HTTP 线程只负责"构 envelope + MQTT publish",结果由 SSE {@code diag-result} 推送。
+ * 全异步:HTTP 线程只负责"受理请求 + 记录 pending + MQTT publish",结果由 SSE {@code diag-result} 推送。
  */
 @RestController
 @RequestMapping("/api/cmd")
-public class SingleDiagController {
+public class SingleCmdController {
 
-    private final DiagDispatcher dispatcher;
+    private final SingleCmdService singleCmdService;
     private final OperatorContextResolver operatorResolver;
 
-    public SingleDiagController(DiagDispatcher dispatcher, OperatorContextResolver operatorResolver) {
-        this.dispatcher = dispatcher;
+    public SingleCmdController(SingleCmdService singleCmdService, OperatorContextResolver operatorResolver) {
+        this.singleCmdService = singleCmdService;
         this.operatorResolver = operatorResolver;
     }
 
     @PostMapping("/single")
     public Map<String, String> single(@RequestBody SingleCmdRequest req,
                                       HttpServletRequest http) {
-        validate(req);
         Operator operator = operatorResolver.resolve(http);
-        String msgId = dispatcher.dispatchSingleCmd(
-                req.channelId(), req.type(), req.reqData(), req.timeoutMs(), operator);
+        String msgId = singleCmdService.dispatch(req, operator);
         return Map.of("msgId", msgId);
-    }
-
-    private static void validate(SingleCmdRequest req) {
-        if (req == null) {
-            throw new BusinessException(ApiError.E40001, "请求 body 必填");
-        }
-        if (req.channelId() == null || req.channelId().isBlank()) {
-            throw new BusinessException(ApiError.E40001, "channelId 必填");
-        }
-        if (req.reqData() == null || req.reqData().isBlank()) {
-            throw new BusinessException(ApiError.E40001, "reqData 必填(UDS PDU hex)");
-        }
     }
 
     /**
