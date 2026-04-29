@@ -26,6 +26,8 @@ public class DiagCmdMetrics {
     private final Timer singleCmdLatency;
     private final Counter singleCmdTotal;
     private final Counter singleCmdSuccessTotal;
+    private final Counter batchCmdTotal;
+    private final Counter batchCmdSuccessTotal;
     private final ConcurrentHashMap<String, Long> pendingTimestamps = new ConcurrentHashMap<>();
 
     public DiagCmdMetrics(MeterRegistry registry) {
@@ -37,6 +39,8 @@ public class DiagCmdMetrics {
                 .register(registry);
         this.singleCmdTotal = registry.counter("dota_single_cmd_total");
         this.singleCmdSuccessTotal = registry.counter("dota_single_cmd_success_total");
+        this.batchCmdTotal = registry.counter("dota_batch_cmd_total");
+        this.batchCmdSuccessTotal = registry.counter("dota_batch_cmd_success_total");
     }
 
     /**
@@ -61,6 +65,22 @@ public class DiagCmdMetrics {
         }
         if (success) {
             singleCmdSuccessTotal.increment();
+        }
+    }
+
+    public void recordBatchDispatch(String msgId) {
+        batchCmdTotal.increment();
+        pendingTimestamps.put(msgId, System.nanoTime());
+    }
+
+    public void recordBatchResponse(String msgId, boolean success) {
+        Long startNanos = pendingTimestamps.remove(msgId);
+        if (startNanos != null) {
+            long elapsed = System.nanoTime() - startNanos;
+            singleCmdLatency.record(elapsed, TimeUnit.NANOSECONDS);
+        }
+        if (success) {
+            batchCmdSuccessTotal.increment();
         }
     }
 

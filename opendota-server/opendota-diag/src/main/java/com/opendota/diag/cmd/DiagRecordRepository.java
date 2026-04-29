@@ -146,6 +146,106 @@ public class DiagRecordRepository {
             String traceId) {
     }
 
+    /**
+     * 批量命令 pending 记录(Step 3.1)。
+     */
+    public void insertPendingBatchCmd(PendingBatchCmd pending) {
+        String stepsJson = toJson(pending.steps());
+        jdbc.update("""
+                INSERT INTO diag_record (
+                    msg_id, tenant_id, vin, ecu_name, act, req_raw_hex, status,
+                    operator_id, operator_role, ticket_id, trace_id
+                ) VALUES (?, ?, ?, ?, ?, ?, -1, ?, ?, ?, ?)
+                """,
+                pending.msgId(),
+                pending.tenantId(),
+                pending.vin(),
+                pending.ecuName(),
+                pending.act(),
+                stepsJson,
+                pending.operatorId(),
+                pending.operatorRole(),
+                pending.ticketId(),
+                pending.traceId());
+    }
+
+    /**
+     * 批量响应 upsert(Step 3.1)。
+     *
+     * <p>按 msgId 关联 pending diag_record,更新响应数据和翻译结果。
+     */
+    public long upsertBatchResponse(CompletedBatchCmd completed) {
+        String resultsJson = toJson(completed.results());
+        String translatedJson = toJson(completed.translated());
+        Long id = jdbc.queryForObject("""
+                INSERT INTO diag_record (
+                    msg_id, tenant_id, vin, ecu_name, act, req_raw_hex,
+                    res_raw_hex, translated, status, error_code,
+                    operator_id, operator_role, ticket_id, trace_id, responded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (msg_id) DO UPDATE SET
+                    vin = EXCLUDED.vin,
+                    ecu_name = COALESCE(diag_record.ecu_name, EXCLUDED.ecu_name),
+                    res_raw_hex = EXCLUDED.res_raw_hex,
+                    translated = EXCLUDED.translated,
+                    status = EXCLUDED.status,
+                    error_code = EXCLUDED.error_code,
+                    responded_at = EXCLUDED.responded_at
+                RETURNING id
+                """,
+                Long.class,
+                completed.msgId(),
+                completed.tenantId(),
+                completed.vin(),
+                completed.ecuName(),
+                completed.act(),
+                completed.reqRawHex(),
+                resultsJson,
+                translatedJson,
+                completed.overallStatus(),
+                completed.errorCode(),
+                completed.operatorId(),
+                completed.operatorRole(),
+                completed.ticketId(),
+                completed.traceId(),
+                Timestamp.from(completed.respondedAt()));
+        if (id == null) {
+            throw new IllegalStateException("diag_record batch upsert 未返回主键: msgId=" + completed.msgId());
+        }
+        return id;
+    }
+
+    public record PendingBatchCmd(
+            String msgId,
+            String tenantId,
+            String vin,
+            String ecuName,
+            String act,
+            Map<String, Object> steps,
+            String operatorId,
+            String operatorRole,
+            String ticketId,
+            String traceId) {
+    }
+
+    public record CompletedBatchCmd(
+            String msgId,
+            String tenantId,
+            String vin,
+            String ecuName,
+            String act,
+            String reqRawHex,
+            Map<String, Object> results,
+            Integer overallStatus,
+            String errorCode,
+            String operatorId,
+            String operatorRole,
+            String ticketId,
+            String traceId,
+            Instant respondedAt,
+            Map<String, Object> translated) {
+    }
+
     public record CompletedSingleCmd(
             String msgId,
             String tenantId,

@@ -3,6 +3,9 @@ package com.opendota.diag.dispatch;
 import com.opendota.common.envelope.DiagAction;
 import com.opendota.common.envelope.DiagMessage;
 import com.opendota.common.envelope.Operator;
+import com.opendota.common.payload.common.BatchDiagPayload;
+import com.opendota.common.payload.common.Step;
+import com.opendota.common.payload.common.Transport;
 import com.opendota.common.payload.single.SingleCmdPayload;
 import com.opendota.diag.channel.ChannelContext;
 import com.opendota.diag.channel.ChannelManager;
@@ -14,6 +17,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -105,6 +109,65 @@ public class DiagDispatcher {
     }
 
     // ============================================================
+    // 批量诊断(协议 §6)
+    // ============================================================
+
+    /**
+     * 下发批量 UDS 指令(协议 §6)。
+     *
+     * <p>与单步不同,批量命令不需要预先建立诊断通道;车端 Agent 自行管理 ECU 连接/会话生命周期。
+     *
+     * @param vin        目标车辆 VIN
+     * @param ecuName    目标 ECU 名称
+     * @param ecuScope   ECU 作用域(v1.2 R2 必填)
+     * @param transport  传输层类型
+     * @param txId       CAN 发送 ID
+     * @param rxId       CAN 接收 ID
+     * @param strategy   错误策略:0=遇错中止,1=跳过继续
+     * @param steps      步骤列表
+     * @param operator   操作者
+     * @return 生成的 {@code msgId}
+     */
+    public String dispatchBatchCmd(String vin, String ecuName, List<String> ecuScope,
+                                   Transport transport, String txId, String rxId,
+                                   Integer strategy, List<Step> steps, Operator operator) {
+        PreparedBatchCmd prepared = prepareBatchCmd(vin, ecuName, ecuScope, transport, txId, rxId, strategy, steps, operator);
+        publishPreparedBatchCmd(prepared);
+        return prepared.envelope().msgId();
+    }
+
+    /**
+     * 构建批量诊断 envelope,但不立即 publish。
+     *
+     * <p>上层服务先写 pending diag_record,再调用 publish 发送。
+     */
+    public PreparedBatchCmd prepareBatchCmd(String vin, String ecuName, List<String> ecuScope,
+                                            Transport transport, String txId, String rxId,
+                                            Integer strategy, List<Step> steps, Operator operator) {
+        String msgId = DiagMessage.newMsgId();
+        BatchDiagPayload payload = new BatchDiagPayload(
+                null, ecuName, ecuScope, transport, txId, rxId, null, strategy, steps);
+        DiagMessage<BatchDiagPayload> envelope = new DiagMessage<>(
+                msgId,
+                System.currentTimeMillis(),
+                vin,
+                DiagAction.BATCH_CMD,
+                operator,
+                null,
+                payload);
+        return new PreparedBatchCmd(envelope);
+    }
+
+    public void publishPreparedBatchCmd(PreparedBatchCmd prepared) {
+        log.info("dispatch batch_cmd msgId={} vin={} ecuName={} steps={}",
+                prepared.envelope().msgId(),
+                prepared.envelope().vin(),
+                prepared.envelope().payload().ecuName(),
+                prepared.envelope().payload().steps() == null ? 0 : prepared.envelope().payload().steps().size());
+        publisher.publish(prepared.envelope());
+    }
+
+    // ============================================================
     // 任务取消(协议 §12.4 + v1.4 A2)
     // ============================================================
 
@@ -157,5 +220,9 @@ public class DiagDispatcher {
             ChannelContext channelContext,
             String resolvedType,
             DiagMessage<SingleCmdPayload> envelope) {
+    }
+
+    public record PreparedBatchCmd(
+            DiagMessage<BatchDiagPayload> envelope) {
     }
 }

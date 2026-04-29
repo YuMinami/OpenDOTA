@@ -45,6 +45,28 @@ public class SseEventRepository {
         return id;
     }
 
+    /**
+     * 写入批量诊断结果 SSE 事件(Step 3.1)。
+     */
+    public long insertBatchResult(String tenantId, String vin, long sourceId, Map<String, Object> payloadSummary) {
+        String summaryJson = toJson(payloadSummary);
+        Long id = jdbc.queryForObject("""
+                INSERT INTO sse_event (
+                    tenant_id, vin, event_type, source_type, source_id, payload_summary
+                ) VALUES (?, ?, 'batch-result', 'diag_record', ?, CAST(? AS jsonb))
+                RETURNING id
+                """,
+                Long.class,
+                tenantId,
+                vin,
+                sourceId,
+                summaryJson);
+        if (id == null) {
+            throw new IllegalStateException("sse_event batch insert 未返回主键: vin=" + vin + ", sourceId=" + sourceId);
+        }
+        return id;
+    }
+
     public List<StoredSseEvent> findReplayEvents(String vin, long lastEventId, int limit) {
         return jdbc.query("""
                 SELECT id, tenant_id, vin, event_type, source_type, source_id, payload_summary, created_at

@@ -34,20 +34,28 @@ public class SingleRespRedisPublisher {
     }
 
     public void publishDiagResult(String vin, long sseEventId, Map<String, Object> payloadSummary) {
+        publish(vin, sseEventId, "diag-result", payloadSummary);
+    }
+
+    public void publishBatchResult(String vin, long sseEventId, Map<String, Object> payloadSummary) {
+        publish(vin, sseEventId, "batch-result", payloadSummary);
+    }
+
+    private void publish(String vin, long sseEventId, String eventType, Map<String, Object> payloadSummary) {
         String channel = "dota:resp:" + vin;
         Map<String, Object> message = new LinkedHashMap<>(payloadSummary);
         message.put("sseEventId", sseEventId);
-        message.put("eventType", "diag-result");
+        message.put("eventType", eventType);
 
         try {
             String json = objectMapper.writeValueAsString(message);
             redisTemplate.convertAndSend(channel, json);
-            log.debug("Redis PUB channel={} sseEventId={} msgId={}", channel, sseEventId, payloadSummary.get("msgId"));
+            log.debug("Redis PUB channel={} eventType={} sseEventId={} msgId={}", channel, eventType, sseEventId, payloadSummary.get("msgId"));
         } catch (JsonProcessingException e) {
             throw new IllegalStateException("Redis payload JSON 序列化失败", e);
         } catch (Exception e) {
             redisHealthProbe.markUnhealthy(e);
-            log.warn("Redis PUB 失败 channel={} sseEventId={}", channel, sseEventId, e);
+            log.warn("Redis PUB 失败 channel={} eventType={} sseEventId={}", channel, eventType, sseEventId, e);
         }
     }
 }
