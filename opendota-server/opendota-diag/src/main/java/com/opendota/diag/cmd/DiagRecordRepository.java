@@ -264,6 +264,119 @@ public class DiagRecordRepository {
             Map<String, Object> translated) {
     }
 
+    // ============================================================
+    // 多 ECU 脚本(协议 §9, Step 3.3)
+    // ============================================================
+
+    /**
+     * 多 ECU 脚本 pending 记录(Step 3.3)。
+     */
+    public void insertPendingScriptCmd(PendingScriptCmd pending) {
+        String ecusJson = toJson(pending.ecus());
+        jdbc.update("""
+                INSERT INTO diag_record (
+                    msg_id, tenant_id, vin, ecu_name, act, req_raw_hex, status,
+                    operator_id, operator_role, ticket_id, trace_id
+                ) VALUES (?, ?, ?, ?, ?, ?, -1, ?, ?, ?, ?)
+                """,
+                pending.msgId(),
+                pending.tenantId(),
+                pending.vin(),
+                pending.ecuName(),
+                pending.act(),
+                ecusJson,
+                pending.operatorId(),
+                pending.operatorRole(),
+                pending.ticketId(),
+                pending.traceId());
+    }
+
+    /**
+     * 多 ECU 脚本响应 upsert(Step 3.3)。
+     *
+     * <p>按 msgId 关联 pending diag_record,更新响应数据和翻译结果。
+     */
+    public long upsertScriptResponse(CompletedScriptCmd completed) {
+        String resultsJson = toJson(completed.results());
+        String translatedJson = toJson(completed.translated());
+        Long id = jdbc.queryForObject("""
+                INSERT INTO diag_record (
+                    msg_id, tenant_id, vin, ecu_name, act, req_raw_hex,
+                    res_raw_hex, translated, status, error_code,
+                    operator_id, operator_role, ticket_id, trace_id, responded_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT (msg_id) DO UPDATE SET
+                    vin = EXCLUDED.vin,
+                    ecu_name = COALESCE(diag_record.ecu_name, EXCLUDED.ecu_name),
+                    res_raw_hex = EXCLUDED.res_raw_hex,
+                    translated = EXCLUDED.translated,
+                    status = EXCLUDED.status,
+                    error_code = EXCLUDED.error_code,
+                    responded_at = EXCLUDED.responded_at
+                RETURNING id
+                """,
+                Long.class,
+                completed.msgId(),
+                completed.tenantId(),
+                completed.vin(),
+                completed.ecuName(),
+                completed.act(),
+                completed.reqRawHex(),
+                resultsJson,
+                translatedJson,
+                completed.overallStatus(),
+                completed.errorCode(),
+                completed.operatorId(),
+                completed.operatorRole(),
+                completed.ticketId(),
+                completed.traceId(),
+                Timestamp.from(completed.respondedAt()));
+        if (id == null) {
+            throw new IllegalStateException("diag_record script upsert 未返回主键: msgId=" + completed.msgId());
+        }
+        return id;
+    }
+
+    /**
+     * 多 ECU 脚本 pending 记录。
+     *
+     * @param ecuName 所有 ECU 名称逗号拼接(用于 diag_record.ecu_name 展示)
+     * @param ecus    完整 ECU 块列表(序列化存入 req_raw_hex)
+     */
+    public record PendingScriptCmd(
+            String msgId,
+            String tenantId,
+            String vin,
+            String ecuName,
+            String act,
+            Map<String, Object> ecus,
+            String operatorId,
+            String operatorRole,
+            String ticketId,
+            String traceId) {
+    }
+
+    /**
+     * 多 ECU 脚本完成记录。
+     */
+    public record CompletedScriptCmd(
+            String msgId,
+            String tenantId,
+            String vin,
+            String ecuName,
+            String act,
+            String reqRawHex,
+            Map<String, Object> results,
+            Integer overallStatus,
+            String errorCode,
+            String operatorId,
+            String operatorRole,
+            String ticketId,
+            String traceId,
+            Instant respondedAt,
+            Map<String, Object> translated) {
+    }
+
     public record DiagRecordContext(
             Long id,
             String msgId,

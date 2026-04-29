@@ -6,10 +6,13 @@ import com.opendota.common.envelope.Operator;
 import com.opendota.common.payload.channel.ChannelClosePayload;
 import com.opendota.common.web.ApiError;
 import com.opendota.common.web.BusinessException;
+import com.opendota.diag.arbitration.EcuLockRegistry;
 import com.opendota.mqtt.publisher.MqttPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
+import java.util.List;
 
 /**
  * 通道关闭服务(协议 §4.3 + REST §4.2)。
@@ -27,10 +30,13 @@ public class ChannelCloseService {
 
     private final MqttPublisher publisher;
     private final ChannelManager channelManager;
+    private final EcuLockRegistry ecuLockRegistry;
 
-    public ChannelCloseService(MqttPublisher publisher, ChannelManager channelManager) {
+    public ChannelCloseService(MqttPublisher publisher, ChannelManager channelManager,
+                               EcuLockRegistry ecuLockRegistry) {
         this.publisher = publisher;
         this.channelManager = channelManager;
+        this.ecuLockRegistry = ecuLockRegistry;
     }
 
     /**
@@ -55,6 +61,10 @@ public class ChannelCloseService {
         publisher.publish(env);
         // MQTT 已 PUBACK 才落本地清理,避免发布失败时通道丢失但车端仍在持锁
         channelManager.close(channelId);
+
+        // 协议 §10.2.3:释放通道关联的 ECU 锁(反序 LIFO)
+        List<EcuLockRegistry.AcquiredLock> locks = channelManager.detachLocks(channelId);
+        ecuLockRegistry.releaseAll(locks);
 
         log.info("dispatch channel_close channelId={} vin={} resetSession={}",
                 channelId, ctx.getVin(), resetSession);

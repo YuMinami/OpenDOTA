@@ -4,8 +4,10 @@ import com.opendota.common.envelope.DiagAction;
 import com.opendota.common.envelope.DiagMessage;
 import com.opendota.common.envelope.Operator;
 import com.opendota.common.payload.common.BatchDiagPayload;
+import com.opendota.common.payload.common.ScriptDiagPayload;
 import com.opendota.common.payload.common.Step;
 import com.opendota.common.payload.common.Transport;
+import com.opendota.common.payload.common.EcuBlock;
 import com.opendota.common.payload.single.SingleCmdPayload;
 import com.opendota.diag.channel.ChannelContext;
 import com.opendota.diag.channel.ChannelManager;
@@ -168,6 +170,44 @@ public class DiagDispatcher {
     }
 
     // ============================================================
+    // 多 ECU 脚本(协议 §9)
+    // ============================================================
+
+    /**
+     * 构建多 ECU 脚本 envelope,但不立即 publish。
+     *
+     * <p>上层服务先写 pending diag_record,再调用 publish 发送。
+     */
+    public PreparedScriptCmd prepareScriptCmd(String vin, String scriptId, String executionMode,
+                                              Integer globalTimeoutMs, Integer priority,
+                                              List<EcuBlock> ecus, Operator operator) {
+        String msgId = DiagMessage.newMsgId();
+        ScriptDiagPayload payload = new ScriptDiagPayload(
+                null, scriptId, executionMode, globalTimeoutMs, priority, ecus);
+        DiagMessage<ScriptDiagPayload> envelope = new DiagMessage<>(
+                msgId,
+                System.currentTimeMillis(),
+                vin,
+                DiagAction.SCRIPT_CMD,
+                operator,
+                null,
+                payload);
+        return new PreparedScriptCmd(envelope);
+    }
+
+    public void publishPreparedScriptCmd(PreparedScriptCmd prepared) {
+        int ecuCount = prepared.envelope().payload().ecus() == null
+                ? 0 : prepared.envelope().payload().ecus().size();
+        log.info("dispatch script_cmd msgId={} vin={} scriptId={} executionMode={} ecus={}",
+                prepared.envelope().msgId(),
+                prepared.envelope().vin(),
+                prepared.envelope().payload().scriptId(),
+                prepared.envelope().payload().executionMode(),
+                ecuCount);
+        publisher.publish(prepared.envelope());
+    }
+
+    // ============================================================
     // 任务取消(协议 §12.4 + v1.4 A2)
     // ============================================================
 
@@ -224,5 +264,9 @@ public class DiagDispatcher {
 
     public record PreparedBatchCmd(
             DiagMessage<BatchDiagPayload> envelope) {
+    }
+
+    public record PreparedScriptCmd(
+            DiagMessage<ScriptDiagPayload> envelope) {
     }
 }

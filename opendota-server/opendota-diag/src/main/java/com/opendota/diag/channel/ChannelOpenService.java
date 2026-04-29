@@ -6,6 +6,7 @@ import com.opendota.common.envelope.Operator;
 import com.opendota.common.payload.channel.ChannelOpenPayload;
 import com.opendota.common.payload.common.DoipConfig;
 import com.opendota.common.payload.common.Transport;
+import com.opendota.diag.arbitration.EcuLockRegistry;
 import com.opendota.mqtt.publisher.MqttPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -35,10 +36,13 @@ public class ChannelOpenService {
 
     private final MqttPublisher publisher;
     private final ChannelManager channelManager;
+    private final EcuLockRegistry ecuLockRegistry;
 
-    public ChannelOpenService(MqttPublisher publisher, ChannelManager channelManager) {
+    public ChannelOpenService(MqttPublisher publisher, ChannelManager channelManager,
+                              EcuLockRegistry ecuLockRegistry) {
         this.publisher = publisher;
         this.channelManager = channelManager;
+        this.ecuLockRegistry = ecuLockRegistry;
     }
 
     /**
@@ -51,31 +55,43 @@ public class ChannelOpenService {
      * @return 含本地生成的 {@code channelId} 与 envelope {@code msgId}
      */
     public ChannelOpenResult open(ChannelOpenCommand command) {
-        String channelId = "ch-" + UUID.randomUUID().toString().substring(0, 13);
+        // 协议 §10.2.3:按 ecuScope 字典序原子获取云端 ECU 锁
+        List<EcuLockRegistry.AcquiredLock> acquiredLocks =
+                ecuLockRegistry.tryAcquireAll(command.vin(), command.ecuScope());
 
-        ChannelOpenPayload payload = new ChannelOpenPayload(
-                channelId,
-                command.ecuName(),
-                command.ecuScope(),
-                command.transport(),
-                command.txId(),
-                command.rxId(),
-                command.doipConfig(),
-                command.globalTimeoutMs(),
-                command.force(),
-                command.preemptPolicy());
+        try {
+            String channelId = "ch-" + UUID.randomUUID().toString().substring(0, 13);
 
-        DiagMessage<ChannelOpenPayload> env =
-                DiagMessage.c2v(command.vin(), DiagAction.CHANNEL_OPEN, command.operator(), payload);
+            ChannelOpenPayload payload = new ChannelOpenPayload(
+                    channelId,
+                    command.ecuName(),
+                    command.ecuScope(),
+                    command.transport(),
+                    command.txId(),
+                    command.rxId(),
+                    command.doipConfig(),
+                    command.globalTimeoutMs(),
+                    command.force(),
+                    command.preemptPolicy());
 
-        channelManager.register(channelId, command.vin(), command.ecuName(),
-                payload.ecuScope(), command.operator());
-        publisher.publish(env);
+            DiagMessage<ChannelOpenPayload> env =
+                    DiagMessage.c2v(command.vin(), DiagAction.CHANNEL_OPEN, command.operator(), payload);
 
-        log.info("dispatch channel_open channelId={} vin={} ecu={} scope={} transport={}",
-                channelId, command.vin(), command.ecuName(), payload.ecuScope(),
-                payload.transport().wireName());
-        return new ChannelOpenResult(channelId, env.msgId());
+            channelManager.register(channelId, command.vin(), command.ecuName(),
+                    payload.ecuScope(), command.operator());
+            // 关联锁到通道生命周期 —— 关通道时自动释放
+            channelManager.attachLocks(channelId, acquiredLocks);
+            publisher.publish(env);
+
+            log.info("dispatch channel_open channelId={} vin={} ecu={} scope={} transport={}",
+                    channelId, command.vin(), command.ecuName(), payload.ecuScope(),
+                    payload.transport().wireName());
+            return new ChannelOpenResult(channelId, env.msgId());
+        } catch (RuntimeException ex) {
+            // MQTT publish 失败等 → 释放已获取的锁
+            ecuLockRegistry.releaseAll(acquiredLocks);
+            throw ex;
+        }
     }
 
     /**

@@ -7,6 +7,7 @@ import com.opendota.common.payload.channel.ChannelEventPayload;
 import com.opendota.common.payload.channel.ChannelOpenPayload;
 import com.opendota.common.payload.channel.ChannelReadyPayload;
 import com.opendota.common.payload.batch.BatchRespPayload;
+import com.opendota.common.payload.script.ScriptRespPayload;
 import com.opendota.common.payload.single.SingleCmdPayload;
 import com.opendota.common.payload.single.SingleRespPayload;
 import org.slf4j.Logger;
@@ -110,6 +111,7 @@ public class EnvelopeReader {
         registry.put(DiagAction.SINGLE_CMD, SingleCmdPayload.class);
         registry.put(DiagAction.SINGLE_RESP, SingleRespPayload.class);
         registry.put(DiagAction.BATCH_RESP, BatchRespPayload.class);
+        registry.put(DiagAction.SCRIPT_RESP, ScriptRespPayload.class);
         return registry;
     }
 

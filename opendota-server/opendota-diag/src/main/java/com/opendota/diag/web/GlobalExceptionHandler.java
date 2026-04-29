@@ -3,6 +3,7 @@ package com.opendota.diag.web;
 import com.opendota.common.web.ApiError;
 import com.opendota.common.web.ApiResponse;
 import com.opendota.common.web.BusinessException;
+import com.opendota.diag.arbitration.EcuLockException;
 import com.opendota.mqtt.publisher.MqttPublishException;
 import com.opendota.odx.service.OdxResourceNotFoundException;
 import org.slf4j.Logger;
@@ -37,6 +38,12 @@ public class GlobalExceptionHandler {
     public ResponseEntity<ApiResponse<Object>> handleMqtt(MqttPublishException ex) {
         log.error("MQTT 下游异常: {}", ex.getMessage(), ex);
         return ResponseEntity.ok(ApiResponse.error(ApiError.E50301, ex.getMessage()));
+    }
+
+    @ExceptionHandler(EcuLockException.class)
+    public ResponseEntity<ApiResponse<Object>> handleEcuLock(EcuLockException ex) {
+        log.warn("ECU 锁获取失败 vin={} conflictEcus={} msg={}", ex.getVin(), ex.getConflictEcus(), ex.getMessage());
+        return ResponseEntity.ok(ApiResponse.error(ApiError.E42307, ex.getMessage()));
     }
 
     @ExceptionHandler(OdxResourceNotFoundException.class)

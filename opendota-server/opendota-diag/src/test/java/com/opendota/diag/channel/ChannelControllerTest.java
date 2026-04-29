@@ -6,6 +6,7 @@ import com.opendota.common.envelope.DiagMessage;
 import com.opendota.common.payload.channel.ChannelClosePayload;
 import com.opendota.common.payload.channel.ChannelOpenPayload;
 import com.opendota.diag.api.OperatorContextResolver;
+import com.opendota.diag.arbitration.EcuLockRegistry;
 import com.opendota.diag.web.GlobalExceptionHandler;
 import com.opendota.diag.web.ResponseWrapper;
 import com.opendota.mqtt.publisher.MqttPublisher;
@@ -60,8 +61,13 @@ class ChannelControllerTest {
         doNothing().when(publisher).publish(any(DiagMessage.class));
 
         channelManager = new ChannelManager();
-        ChannelOpenService openService = new ChannelOpenService(publisher, channelManager);
-        ChannelCloseService closeService = new ChannelCloseService(publisher, channelManager);
+        // mock EcuLockRegistry:测试不需要真实 Redis
+        EcuLockRegistry ecuLockRegistry = mock(EcuLockRegistry.class);
+        org.mockito.Mockito.when(ecuLockRegistry.tryAcquireAll(
+                org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyList())).thenReturn(java.util.List.of());
+        ChannelOpenService openService = new ChannelOpenService(publisher, channelManager, ecuLockRegistry);
+        ChannelCloseService closeService = new ChannelCloseService(publisher, channelManager, ecuLockRegistry);
         ChannelController controller = new ChannelController(
                 openService, closeService, new OperatorContextResolver());
 

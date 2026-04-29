@@ -47,7 +47,8 @@ public enum ApiError {
     E42303(42303, "车端 signal catalog 版本落后"),
     E42304(42304, "ECU 已被占用"),
     E42305(42305, "当前任务不可抢占"),
-    E42306(42306, "车端时钟不可信,定时任务已挂起");
+    E42306(42306, "车端时钟不可信,定时任务已挂起"),
+    E42307(42307, "云端 ECU 锁获取失败(MULTI_ECU_LOCK_FAILED)");
 
     private static final Map<Integer, ApiError> INDEX = Arrays.stream(values())
             .collect(Collectors.toUnmodifiableMap(ApiError::code, Function.identity()));

@@ -41,6 +41,10 @@ public class SingleRespRedisPublisher {
         publish(vin, sseEventId, "batch-result", payloadSummary);
     }
 
+    public void publishScriptResult(String vin, long sseEventId, Map<String, Object> payloadSummary) {
+        publish(vin, sseEventId, "script-result", payloadSummary);
+    }
+
     private void publish(String vin, long sseEventId, String eventType, Map<String, Object> payloadSummary) {
         String channel = "dota:resp:" + vin;
         Map<String, Object> message = new LinkedHashMap<>(payloadSummary);

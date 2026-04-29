@@ -4,6 +4,7 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
+import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
@@ -28,6 +29,12 @@ public class DiagCmdMetrics {
     private final Counter singleCmdSuccessTotal;
     private final Counter batchCmdTotal;
     private final Counter batchCmdSuccessTotal;
+    private final Counter scriptCmdTotal;
+    private final Counter scriptCmdSuccessTotal;
+    private final Counter macroDispatchTotal;
+    private final Counter macroSecurityTotal;
+    private final Counter macroRoutineWaitTotal;
+    private final Counter macroDataTransferTotal;
     private final ConcurrentHashMap<String, Long> pendingTimestamps = new ConcurrentHashMap<>();
 
     public DiagCmdMetrics(MeterRegistry registry) {
@@ -41,6 +48,23 @@ public class DiagCmdMetrics {
         this.singleCmdSuccessTotal = registry.counter("dota_single_cmd_success_total");
         this.batchCmdTotal = registry.counter("dota_batch_cmd_total");
         this.batchCmdSuccessTotal = registry.counter("dota_batch_cmd_success_total");
+        this.scriptCmdTotal = registry.counter("dota_script_cmd_total");
+        this.scriptCmdSuccessTotal = registry.counter("dota_script_cmd_success_total");
+        this.macroDispatchTotal = Counter.builder("dota_macro_dispatch_total")
+                .description("宏指令下发总数(按 macroType 维度)")
+                .register(registry);
+        this.macroSecurityTotal = Counter.builder("dota_macro_dispatch_total")
+                .tag("macroType", "macro_security")
+                .description("macro_security 下发次数")
+                .register(registry);
+        this.macroRoutineWaitTotal = Counter.builder("dota_macro_dispatch_total")
+                .tag("macroType", "macro_routine_wait")
+                .description("macro_routine_wait 下发次数")
+                .register(registry);
+        this.macroDataTransferTotal = Counter.builder("dota_macro_dispatch_total")
+                .tag("macroType", "macro_data_transfer")
+                .description("macro_data_transfer 下发次数")
+                .register(registry);
     }
 
     /**
@@ -81,6 +105,44 @@ public class DiagCmdMetrics {
         }
         if (success) {
             batchCmdSuccessTotal.increment();
+        }
+    }
+
+    public void recordScriptDispatch(String msgId) {
+        scriptCmdTotal.increment();
+        pendingTimestamps.put(msgId, System.nanoTime());
+    }
+
+    public void recordScriptResponse(String msgId, boolean success) {
+        Long startNanos = pendingTimestamps.remove(msgId);
+        if (startNanos != null) {
+            long elapsed = System.nanoTime() - startNanos;
+            singleCmdLatency.record(elapsed, TimeUnit.NANOSECONDS);
+        }
+        if (success) {
+            scriptCmdSuccessTotal.increment();
+        }
+    }
+
+    /**
+     * 记录宏指令下发(协议 §7)。
+     *
+     * <p>按 macroType 分维度计数,用于审计和 SLO 监控。
+     *
+     * @param macroTypes 本次下发包含的宏类型列表
+     */
+    public void recordMacroDispatch(List<String> macroTypes) {
+        if (macroTypes == null) {
+            return;
+        }
+        for (String macroType : macroTypes) {
+            macroDispatchTotal.increment();
+            switch (macroType) {
+                case "macro_security" -> macroSecurityTotal.increment();
+                case "macro_routine_wait" -> macroRoutineWaitTotal.increment();
+                case "macro_data_transfer" -> macroDataTransferTotal.increment();
+                default -> { /* 未知宏类型,仅计总数 */ }
+            }
         }
     }
 

@@ -8,6 +8,7 @@ import com.opendota.common.payload.channel.ChannelOpenPayload;
 import com.opendota.common.payload.channel.ChannelReadyPayload;
 import com.opendota.common.payload.single.SingleCmdPayload;
 import com.opendota.common.payload.batch.BatchRespPayload;
+import com.opendota.common.payload.script.ScriptRespPayload;
 import com.opendota.common.payload.single.SingleRespPayload;
 import org.junit.jupiter.api.Test;
 
@@ -32,13 +33,14 @@ class EnvelopeReaderTest {
         assertInstanceOf(SingleCmdPayload.class, reader.parse(envelope("single_cmd", "{}")).payload());
         assertInstanceOf(SingleRespPayload.class, reader.parse(envelope("single_resp", "{}")).payload());
         assertInstanceOf(BatchRespPayload.class, reader.parse(envelope("batch_resp", "{}")).payload());
+        assertInstanceOf(ScriptRespPayload.class, reader.parse(envelope("script_resp", "{}")).payload());
     }
 
     @Test
     void autoParseFallsBackToJsonNodeForUnregisteredActs() {
         for (String act : new String[]{
                 "batch_cmd", "schedule_set", "schedule_cancel", "schedule_resp",
-                "script_cmd", "script_resp", "queue_query", "queue_delete", "queue_pause",
+                "script_cmd", "queue_query", "queue_delete", "queue_pause",
                 "queue_resume", "queue_status", "queue_reject", "task_pause", "task_resume",
                 "task_cancel", "task_query", "task_ack", "condition_fired", "execution_begin",
                 "execution_end", "time_sync_request", "time_sync_response", "signal_catalog_push",

@@ -1,6 +1,7 @@
 package com.opendota.diag.channel;
 
 import com.opendota.common.envelope.Operator;
+import com.opendota.diag.arbitration.EcuLockRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
@@ -32,6 +33,9 @@ public class ChannelManager {
     private static final Logger log = LoggerFactory.getLogger(ChannelManager.class);
 
     private final Map<String, ChannelContext> channels = new ConcurrentHashMap<>();
+
+    /** 通道关联的 ECU 分布式锁。key=channelId, value=锁列表。 */
+    private final Map<String, List<EcuLockRegistry.AcquiredLock>> channelLocks = new ConcurrentHashMap<>();
 
     /** 登记一个新通道上下文。幂等:同 channelId 再次登记会覆盖,打 warn。 */
     public ChannelContext register(String channelId, String vin, String ecuName,
@@ -85,6 +89,28 @@ public class ChannelManager {
         if (removed != null) {
             log.info("channel 关通道 channelId={} vin={}", channelId, removed.getVin());
         }
+    }
+
+    /**
+     * 关联通道与已获取的 ECU 锁。
+     *
+     * @param channelId     通道 ID
+     * @param acquiredLocks {@link EcuLockRegistry#tryAcquireAll} 返回的锁列表
+     */
+    public void attachLocks(String channelId, List<EcuLockRegistry.AcquiredLock> acquiredLocks) {
+        channelLocks.put(channelId, acquiredLocks);
+        log.debug("channel 附加 ECU 锁 channelId={} 锁数={}", channelId, acquiredLocks.size());
+    }
+
+    /**
+     * 取出并移除通道关联的 ECU 锁(供关通道时释放)。
+     *
+     * @param channelId 通道 ID
+     * @return 锁列表;不存在时返回空列表
+     */
+    public List<EcuLockRegistry.AcquiredLock> detachLocks(String channelId) {
+        List<EcuLockRegistry.AcquiredLock> locks = channelLocks.remove(channelId);
+        return locks == null ? List.of() : locks;
     }
 
     /** 供监控/健康检查使用。 */
