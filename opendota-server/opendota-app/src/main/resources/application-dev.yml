@@ -21,6 +21,10 @@ logging:
     com.opendota.simulator: INFO
 
 opendota:
+  security:
+    jwt:
+      # dev 专用测试密钥,仅 32 字节,生产禁止使用
+      secret: dGVzdC1zZWNyZXQtZm9yLWRldi1vbmx5LTMyYnl0ZXM=
   simulator:
     enabled: true
     # 启用两辆模拟车,覆盖在线/离线场景

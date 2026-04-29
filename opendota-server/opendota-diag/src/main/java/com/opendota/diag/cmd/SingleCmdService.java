@@ -5,8 +5,8 @@ import com.opendota.common.envelope.Operator;
 import com.opendota.common.logging.DiagMdcKeys;
 import com.opendota.common.payload.single.SingleCmdPayload;
 import com.opendota.diag.dispatch.DiagDispatcher;
-import com.opendota.diag.web.ApiError;
-import com.opendota.diag.web.BusinessException;
+import com.opendota.common.web.ApiError;
+import com.opendota.common.web.BusinessException;
 import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
@@ -26,10 +26,13 @@ public class SingleCmdService {
 
     private final DiagDispatcher dispatcher;
     private final DiagRecordRepository diagRecordRepository;
+    private final DiagCmdMetrics metrics;
 
-    public SingleCmdService(DiagDispatcher dispatcher, DiagRecordRepository diagRecordRepository) {
+    public SingleCmdService(DiagDispatcher dispatcher, DiagRecordRepository diagRecordRepository,
+                            DiagCmdMetrics metrics) {
         this.dispatcher = dispatcher;
         this.diagRecordRepository = diagRecordRepository;
+        this.metrics = metrics;
     }
 
     public String dispatch(SingleCmdController.SingleCmdRequest request, Operator operator) {
@@ -53,6 +56,7 @@ public class SingleCmdService {
 
         try {
             dispatcher.publishPreparedSingleCmd(prepared);
+            metrics.recordDispatch(prepared.envelope().msgId());
             return prepared.envelope().msgId();
         } catch (RuntimeException ex) {
             diagRecordRepository.deleteByMsgId(prepared.envelope().msgId());

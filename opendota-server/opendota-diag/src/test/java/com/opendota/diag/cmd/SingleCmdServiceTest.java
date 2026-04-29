@@ -25,13 +25,15 @@ class SingleCmdServiceTest {
 
     private DiagDispatcher dispatcher;
     private DiagRecordRepository diagRecordRepository;
+    private DiagCmdMetrics metrics;
     private SingleCmdService service;
 
     @BeforeEach
     void setUp() {
         dispatcher = mock(DiagDispatcher.class);
         diagRecordRepository = mock(DiagRecordRepository.class);
-        service = new SingleCmdService(dispatcher, diagRecordRepository);
+        metrics = mock(DiagCmdMetrics.class);
+        service = new SingleCmdService(dispatcher, diagRecordRepository, metrics);
     }
 
     @Test
@@ -74,7 +76,7 @@ class SingleCmdServiceTest {
                 com.opendota.common.envelope.DiagAction.SINGLE_CMD,
                 OPERATOR,
                 null,
-                new SingleCmdPayload(msgId, "ch-1", "raw_uds", "22F190", 5000));
+                new SingleCmdPayload(msgId, "ch-1", "VCU", "raw_uds", "22F190", 5000));
         return new DiagDispatcher.PreparedSingleCmd(channelContext, "raw_uds", envelope);
     }
 }

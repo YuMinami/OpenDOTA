@@ -1,4 +1,4 @@
-package com.opendota.diag.web;
+package com.opendota.common.web;
 
 import java.util.Arrays;
 import java.util.Map;

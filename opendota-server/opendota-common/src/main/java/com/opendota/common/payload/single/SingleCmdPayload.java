@@ -9,6 +9,7 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 public record SingleCmdPayload(
         String cmdId,
         String channelId,
+        String ecuName,
         String type,
         String reqData,
         Integer timeoutMs) {

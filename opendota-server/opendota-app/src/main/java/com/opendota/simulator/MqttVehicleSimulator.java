@@ -17,7 +17,9 @@ import org.slf4j.LoggerFactory;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -59,6 +61,9 @@ public class MqttVehicleSimulator implements MqttCallback {
     private final SimulatorSecurityAuditRepository auditRepository;
     private final ObjectMapper mapper;
     private final Set<String> seenMsgIds = ConcurrentHashMap.newKeySet();
+    // ECU 占用跟踪(符合性测试 B-3 / B-4)
+    private final Set<String> occupiedEcus = ConcurrentHashMap.newKeySet();
+    private final Map<String, List<String>> channelScopes = new ConcurrentHashMap<>();
 
     private MqttClient mqttClient;
 
@@ -195,7 +200,36 @@ public class MqttVehicleSimulator implements MqttCallback {
     // ========== 业务处理 ==========
 
     private void handleChannelOpen(JsonNode env) {
-        String channelId = env.path("payload").path("channelId").asText();
+        JsonNode p = env.path("payload");
+        String channelId = p.path("channelId").asText();
+
+        // B-1: ecuScope 缺失或为空
+        JsonNode ecuScopeNode = p.get("ecuScope");
+        if (ecuScopeNode == null || ecuScopeNode.isNull() || !ecuScopeNode.isArray() || ecuScopeNode.isEmpty()) {
+            sendChannelEventRejected(env, channelId, "ECU_SCOPE_REQUIRED");
+            return;
+        }
+
+        // 解析 ecuScope
+        List<String> ecuScope = new ArrayList<>();
+        for (JsonNode ecu : ecuScopeNode) {
+            ecuScope.add(ecu.asText());
+        }
+
+        // B-3: 同 ECU 二次占用
+        for (String ecu : ecuScope) {
+            if (occupiedEcus.contains(ecu)) {
+                sendChannelEventRejected(env, channelId, "ECU_ALREADY_OCCUPIED");
+                return;
+            }
+        }
+
+        // 成功:登记占用
+        for (String ecu : ecuScope) {
+            occupiedEcus.add(ecu);
+        }
+        channelScopes.put(channelId, Collections.unmodifiableList(ecuScope));
+
         ObjectNode payload = mapper.createObjectNode();
         payload.put("channelId", channelId);
         payload.put("event", "opened");
@@ -207,8 +241,26 @@ public class MqttVehicleSimulator implements MqttCallback {
                 DiagAction.CHANNEL_EVENT, env.get("operator"), payload);
     }
 
+    private void sendChannelEventRejected(JsonNode env, String channelId, String reason) {
+        log.warn("simulator vin={} channel_open 拒绝 channelId={} reason={}", profile.getVin(), channelId, reason);
+        ObjectNode payload = mapper.createObjectNode();
+        payload.put("channelId", channelId);
+        payload.put("event", "rejected");
+        payload.put("status", 1);
+        payload.put("reason", reason);
+        publishEnvelope("dota/v1/event/channel/" + profile.getVin(),
+                DiagAction.CHANNEL_EVENT, env.get("operator"), payload);
+    }
+
     private void handleChannelClose(JsonNode env) {
         String channelId = env.path("payload").path("channelId").asText();
+
+        // 释放 ECU 占用
+        List<String> scope = channelScopes.remove(channelId);
+        if (scope != null) {
+            occupiedEcus.removeAll(scope);
+        }
+
         ObjectNode payload = mapper.createObjectNode();
         payload.put("channelId", channelId);
         payload.put("event", "closed");
@@ -222,6 +274,26 @@ public class MqttVehicleSimulator implements MqttCallback {
         String cmdId = p.path("cmdId").asText();
         String channelId = p.path("channelId").asText();
         String reqData = p.path("reqData").asText().toLowerCase();
+
+        // B-4: ecuName 不在 channel 的 ecuScope 内
+        String ecuName = textOrNull(p.get("ecuName"));
+        if (ecuName != null) {
+            List<String> scope = channelScopes.get(channelId);
+            if (scope != null && !scope.contains(ecuName)) {
+                log.warn("simulator vin={} single_cmd 拒绝: ecuName={} 不在 ecuScope={} channelId={}",
+                        profile.getVin(), ecuName, scope, channelId);
+                ObjectNode payload = mapper.createObjectNode();
+                payload.put("cmdId", cmdId);
+                payload.put("channelId", channelId);
+                payload.put("status", 1);
+                payload.put("errorCode", "ECU_NOT_IN_SCOPE");
+                payload.put("resData", "");
+                payload.put("execDuration", 0);
+                publishEnvelope("dota/v1/resp/single/" + profile.getVin(),
+                        DiagAction.SINGLE_RESP, env.get("operator"), payload);
+                return;
+            }
+        }
 
         String resData = canResponder.respond(reqData);
         if (resData == null) {

@@ -43,17 +43,20 @@ public class SingleRespHandler implements V2CHandler {
     private final DiagRecordRepository diagRecordRepository;
     private final SseEventRepository sseEventRepository;
     private final SingleRespRedisPublisher redisPublisher;
+    private final DiagCmdMetrics metrics;
 
     public SingleRespHandler(OdxService odxService,
                              ChannelManager channelManager,
                              DiagRecordRepository diagRecordRepository,
                              SseEventRepository sseEventRepository,
-                             SingleRespRedisPublisher redisPublisher) {
+                             SingleRespRedisPublisher redisPublisher,
+                             DiagCmdMetrics metrics) {
         this.odxService = odxService;
         this.channelManager = channelManager;
         this.diagRecordRepository = diagRecordRepository;
         this.sseEventRepository = sseEventRepository;
         this.redisPublisher = redisPublisher;
+        this.metrics = metrics;
     }
 
     @Override
@@ -94,6 +97,7 @@ public class SingleRespHandler implements V2CHandler {
 
         Map<String, Object> summary = buildPayloadSummary(context, payload, translated, respondedAt, correlationMsgId);
         long sseEventId = sseEventRepository.insertDiagResult(context.tenantId(), context.vin(), diagRecordId, summary);
+        metrics.recordResponse(correlationMsgId, payload.status() == 0);
         publishAfterCommit(context.vin(), sseEventId, summary);
 
         channelManager.markIdle(payload.channelId());

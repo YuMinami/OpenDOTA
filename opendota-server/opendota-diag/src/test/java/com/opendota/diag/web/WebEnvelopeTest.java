@@ -1,6 +1,8 @@
 package com.opendota.diag.web;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.opendota.common.web.ApiError;
+import com.opendota.common.web.BusinessException;
 import com.opendota.diag.controller.HelloController;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;

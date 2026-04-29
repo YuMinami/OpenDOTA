@@ -1,8 +1,8 @@
 package com.opendota.diag.sse;
 
 import com.opendota.diag.cmd.SseEventRepository;
-import com.opendota.diag.web.ApiError;
-import com.opendota.diag.web.BusinessException;
+import com.opendota.common.web.ApiError;
+import com.opendota.common.web.BusinessException;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;

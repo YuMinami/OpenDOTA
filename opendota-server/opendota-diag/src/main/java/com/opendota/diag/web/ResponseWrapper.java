@@ -1,6 +1,7 @@
 package com.opendota.diag.web;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.opendota.common.web.ApiResponse;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.core.MethodParameter;
 import org.springframework.core.io.Resource;

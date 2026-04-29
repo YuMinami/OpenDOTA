@@ -36,6 +36,20 @@ logging:
 
 # OpenDOTA 业务配置命名空间
 opendota:
+  security:
+    jwt:
+      # Base64 编码的 HMAC 密钥(>=256 bit),生产必须通过环境变量注入
+      secret: ${OPENDOTA_JWT_SECRET:}
+      expiry-seconds: ${OPENDOTA_JWT_EXPIRY:28800}
+      issuer: opendota
+    permit-all-paths:
+      - /error
+      - /api/hello
+      - /actuator/**
+      - /auth/login
+      - /auth/refresh
+      - /swagger-ui/**
+      - /v3/api-docs/**
   simulator:
     # v1.4 B1:生产必须保持 false。dev profile 在 application-dev.yml 覆盖为 true
     enabled: false

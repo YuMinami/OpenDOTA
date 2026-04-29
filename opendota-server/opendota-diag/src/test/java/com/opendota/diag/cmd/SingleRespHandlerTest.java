@@ -26,6 +26,7 @@ class SingleRespHandlerTest {
     private DiagRecordRepository diagRecordRepository;
     private SseEventRepository sseEventRepository;
     private SingleRespRedisPublisher redisPublisher;
+    private DiagCmdMetrics metrics;
     private SingleRespHandler handler;
 
     @BeforeEach
@@ -35,8 +36,9 @@ class SingleRespHandlerTest {
         diagRecordRepository = mock(DiagRecordRepository.class);
         sseEventRepository = mock(SseEventRepository.class);
         redisPublisher = mock(SingleRespRedisPublisher.class);
+        metrics = mock(DiagCmdMetrics.class);
         handler = new SingleRespHandler(
-                odxService, channelManager, diagRecordRepository, sseEventRepository, redisPublisher);
+                odxService, channelManager, diagRecordRepository, sseEventRepository, redisPublisher, metrics);
     }
 
     @Test

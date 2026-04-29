@@ -6,8 +6,8 @@ import com.opendota.common.envelope.Operator;
 import com.opendota.common.payload.single.SingleCmdPayload;
 import com.opendota.diag.channel.ChannelContext;
 import com.opendota.diag.channel.ChannelManager;
-import com.opendota.diag.web.ApiError;
-import com.opendota.diag.web.BusinessException;
+import com.opendota.common.web.ApiError;
+import com.opendota.common.web.BusinessException;
 import com.opendota.mqtt.publisher.MqttPublisher;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -76,7 +76,7 @@ public class DiagDispatcher {
 
         String resolvedType = type == null || type.isBlank() ? "raw_uds" : type;
         String msgId = DiagMessage.newMsgId();
-        SingleCmdPayload payload = new SingleCmdPayload(msgId, channelId, resolvedType, reqData, timeoutMs);
+        SingleCmdPayload payload = new SingleCmdPayload(msgId, channelId, ctx.getEcuName(), resolvedType, reqData, timeoutMs);
         DiagMessage<SingleCmdPayload> envelope = new DiagMessage<>(
                 msgId,
                 System.currentTimeMillis(),

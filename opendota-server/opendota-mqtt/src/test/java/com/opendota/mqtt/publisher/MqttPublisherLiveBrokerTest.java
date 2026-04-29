@@ -67,7 +67,7 @@ class MqttPublisherLiveBrokerTest {
                         DiagAction.SINGLE_CMD,
                         new Operator("eng-1", OperatorRole.ENGINEER, "tenant-a", "DIAG-IT-1"),
                         null,
-                        new SingleCmdPayload("cmd-1", "ch-1", "raw_uds", "22F190", 5000)
+                        new SingleCmdPayload("cmd-1", "ch-1", "VCU", "raw_uds", "22F190", 5000)
                 );
 
                 publisher.publish(env);

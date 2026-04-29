@@ -32,7 +32,7 @@ class PayloadDtoJacksonRoundTripTest {
                 DiagAction.SINGLE_CMD,
                 new Operator("eng-12345", OperatorRole.ENGINEER, "chery-hq", "DIAG-001"),
                 "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-                new SingleCmdPayload("cmd-001", "ch-001", "raw_uds", "22F190", 5000)
+                new SingleCmdPayload("cmd-001", "ch-001", "VCU", "raw_uds", "22F190", 5000)
         );
 
         String json = mapper.writeValueAsString(original);
@@ -53,6 +53,7 @@ class PayloadDtoJacksonRoundTripTest {
         assertNotNull(restored.payload());
         assertEquals(original.payload().cmdId(), restored.payload().cmdId());
         assertEquals(original.payload().channelId(), restored.payload().channelId());
+        assertEquals(original.payload().ecuName(), restored.payload().ecuName());
         assertEquals(original.payload().type(), restored.payload().type());
         assertEquals(original.payload().reqData(), restored.payload().reqData());
         assertEquals(original.payload().timeoutMs(), restored.payload().timeoutMs());

@@ -1,9 +1,9 @@
-package com.opendota.diag.web;
+package com.opendota.common.web;
 
 import java.util.Objects;
 
 /**
- * 业务异常。统一由 {@link GlobalExceptionHandler} 映射为响应信封。
+ * 业务异常。统一由 GlobalExceptionHandler 映射为响应信封。
  */
 public class BusinessException extends RuntimeException {
 
