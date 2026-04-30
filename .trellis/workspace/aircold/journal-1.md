@@ -104,3 +104,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 4: Phase 4 Step 4.8 进度聚合 API
+
+**Date**: 2026-04-30
+**Task**: Phase 4 Step 4.8 进度聚合 API
+**Branch**: `main`
+
+### Summary
+
+实现 Phase 4 Step 4.8 进度聚合 API: GET /api/task/{taskId}/progress (11 状态分布 + boardStatus + completionRate) 与 GET /api/task/{taskId}/executions (执行日志分页)。新增 V9__task_board_progress_view.sql Flyway 迁移、DispatchStatus 枚举集中 11 状态、TaskBoardProgressRepository (JdbcTemplate 视图查询) 与 TaskProgressService 编排聚合。TaskController 新增两端点，TaskExecutionLogRepository 扩展分页查询。13 个新单测 (service 9 + controller MockMvc 4) 全绿，task 模块 129/129 无回归。ADR 决策: completionRate=completed/total 与 REST §6.4 示例 0.54 反推一致；测试粒度遵循项目 SingleCmdControllerTest standalone MockMvc 风格。Phase 4 八个 Step 全部交付完成。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `0fd8081` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
