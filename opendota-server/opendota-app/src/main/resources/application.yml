@@ -116,3 +116,12 @@ opendota:
       tenant-per-second: ${OPENDOTA_RATE_TENANT:100}
       # 单 VIN 每分钟配额
       vin-per-minute: ${OPENDOTA_RATE_VIN:10}
+  lifecycle:
+    reconcile:
+      # 车辆在线状态对账开关(架构 §4.6.4),本地开发可关闭
+      enabled: ${OPENDOTA_LIFECYCLE_RECONCILE_ENABLED:true}
+      # EMQX 5.x REST API 地址
+      emqx-api-url: ${OPENDOTA_EMQX_API_URL:http://localhost:18083/api/v5}
+      # EMQX Dashboard API Key/Secret(对账作业需要查询 /clients)
+      emqx-api-key: ${OPENDOTA_EMQX_API_KEY:}
+      emqx-api-secret: ${OPENDOTA_EMQX_API_SECRET:}
