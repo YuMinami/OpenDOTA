@@ -25,4 +25,16 @@ public interface TaskDispatchRecordRepository extends JpaRepository<TaskDispatch
     @Query("SELECT d.dispatchStatus, COUNT(d) FROM TaskDispatchRecord d " +
            "WHERE d.taskId = :taskId GROUP BY d.dispatchStatus")
     List<Object[]> countByStatusGrouped(@Param("taskId") String taskId);
+
+    /**
+     * 查询指定任务 ID 列表下的所有分发记录。
+     */
+    List<TaskDispatchRecord> findByTaskIdIn(List<String> taskIds);
+
+    /**
+     * 查询指定任务下非终态的分发记录(用于 supersede 场景)。
+     */
+    @Query("SELECT d FROM TaskDispatchRecord d WHERE d.taskId = :taskId " +
+           "AND d.dispatchStatus NOT IN ('completed', 'canceled', 'expired')")
+    List<TaskDispatchRecord> findActiveByTaskId(@Param("taskId") String taskId);
 }

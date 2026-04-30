@@ -18,5 +18,17 @@ public record DispatchCommand(
         String scheduleType,
         String payloadType,
         String diagPayload,
-        String payloadHash
-) {}
+        String payloadHash,
+        /** 被 supersede 的旧任务 ID(协议 §12.6.3),非 null 时车端走 supersede 分支 */
+        String supersedes
+) {
+    /**
+     * 常规构造(无 supersedes)。
+     */
+    public DispatchCommand(String taskId, String tenantId, String vin, String ecuScope,
+                           int priority, String scheduleType, String payloadType,
+                           String diagPayload, String payloadHash) {
+        this(taskId, tenantId, vin, ecuScope, priority, scheduleType, payloadType,
+             diagPayload, payloadHash, null);
+    }
+}
