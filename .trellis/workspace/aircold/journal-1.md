@@ -214,3 +214,36 @@
 - 在本地 docker-compose 上跑 `mvn -Pconformance test -Dopendota.conformance.enabled=true` 验证 Phase4 conformance(本会话无 PG)
 - 拉一个 follow-up 任务 `phase4-step-4-4-task-progress-sse` 关闭剩余 SSE 推送(可放 Phase 5 之前或延到 Phase 9 前端启动时)
 - 归档本任务到 `.trellis/tasks/archive/2026-04/`
+
+
+## Session 5: Phase 4 DoD 缺口补全
+
+**Date**: 2026-04-30
+**Task**: Phase 4 DoD 缺口补全
+**Branch**: `main`
+
+### Summary
+
+把 Phase 4 DoD 4 条核心要求 + Step 4.1/4.2/4.5/4.6/4.8 验收项一次性补齐。V10 迁移引入 task_dispatch_record.pending_online_at 基准列；LifecycleMetrics 加 offline_task_push_latency_seconds Timer 和 SLO 直方图；OutboxMetrics 加 outbox_pending_total{status=new|failed|sent_recent} 三个 gauge + OutboxPendingGaugeRefresher 每 15s 从 PG 喂值；PendingTaskReplayService 在回放成功时打点 latency 并清空基准时间戳。新增 9 文件、改动 7 文件，新增 26 单测（TaskServiceTest 9 例覆盖 100 车 batch + R1-R3）+ 6 conformance 例（Phase4SupersedeConformanceTest D-1/D-2/D-3、Phase4PeriodicEndToEndConformanceTest 累计计数 + 幂等 + 乱序保护）。deploy/prometheus/opendota-alerts.yml 落 6 条 P1/P2 告警规则。opendota-task 测试 155/155 全绿。Step 4.4 SSE task-progress 推送显式留作 follow-up（不在 DoD 4 条核心列表）。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f6b1723` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
