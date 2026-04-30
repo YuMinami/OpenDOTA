@@ -4,6 +4,9 @@ import com.opendota.common.envelope.Operator;
 import com.opendota.common.web.ApiResponse;
 import com.opendota.diag.api.OperatorContextResolver;
 import com.opendota.task.entity.TaskDefinition;
+import com.opendota.task.progress.TaskProgressService;
+import com.opendota.task.progress.TaskProgressService.TaskExecutionLogItem;
+import com.opendota.task.progress.TaskProgressService.TaskProgressView;
 import com.opendota.task.service.TaskService;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.data.domain.Page;
@@ -34,6 +37,8 @@ import java.util.Map;
  *   PUT    /api/task/{taskId}/resume     → 恢复
  *   DELETE /api/task/{taskId}            → 取消
  *   GET    /api/task/{taskId}/versions   → 版本链
+ *   GET    /api/task/{taskId}/progress   → 进度聚合(11 状态 + boardStatus)
+ *   GET    /api/task/{taskId}/executions → 执行日志分页
  * </pre>
  */
 @RestController
@@ -41,10 +46,14 @@ import java.util.Map;
 public class TaskController {
 
     private final TaskService taskService;
+    private final TaskProgressService progressService;
     private final OperatorContextResolver operatorResolver;
 
-    public TaskController(TaskService taskService, OperatorContextResolver operatorResolver) {
+    public TaskController(TaskService taskService,
+                          TaskProgressService progressService,
+                          OperatorContextResolver operatorResolver) {
         this.taskService = taskService;
+        this.progressService = progressService;
         this.operatorResolver = operatorResolver;
     }
 
@@ -133,6 +142,39 @@ public class TaskController {
         Operator operator = operatorResolver.resolve(http);
         List<TaskDefinition> chain = taskService.getVersionChain(taskId, operator.tenantId());
         return ApiResponse.ok(chain);
+    }
+
+    /**
+     * 任务进度聚合(REST §6.4)。
+     *
+     * <p>输出 11 状态分布 + {@code boardStatus} 看板态 + {@code completionRate}。
+     * 跨租户访问返回 404(委派给 {@link TaskService#getTask})。
+     */
+    @GetMapping("/{taskId}/progress")
+    public ApiResponse<TaskProgressView> progress(@PathVariable String taskId,
+                                                   HttpServletRequest http) {
+        Operator operator = operatorResolver.resolve(http);
+        TaskProgressView view = progressService.getProgress(taskId, operator.tenantId());
+        return ApiResponse.ok(view);
+    }
+
+    /**
+     * 任务执行日志分页(REST §6.5)。
+     *
+     * <p>{@code page} 1-based,{@code size} 上限 200(防滥用)。
+     * {@code vin} 可空: 不传则返回任务下所有车辆的执行日志。
+     */
+    @GetMapping("/{taskId}/executions")
+    public ApiResponse<Page<TaskExecutionLogItem>> executions(
+            @PathVariable String taskId,
+            @RequestParam(required = false) String vin,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "50") int size,
+            HttpServletRequest http) {
+        Operator operator = operatorResolver.resolve(http);
+        Page<TaskExecutionLogItem> result = progressService.listExecutions(
+                taskId, operator.tenantId(), vin, page, size);
+        return ApiResponse.ok(result);
     }
 
     // ========== 内部 DTO ==========

@@ -2,11 +2,16 @@ package com.opendota.task.execution;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
+import org.springframework.data.domain.Pageable;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -87,6 +92,61 @@ public class TaskExecutionLogRepository {
     }
 
     /**
+     * 任务执行日志分页查询(REST §6.5)。
+     *
+     * <p>排序: {@code execution_seq DESC, trigger_time DESC}(最新一次执行在前)。
+     * <p>{@code vin} 可空: 为空时返回任务下所有车辆的执行日志,非空时仅返回该 VIN 的记录。
+     * <p>tenant_id 显式过滤,与 PG RLS 互为防御。
+     */
+    public Page<ExecutionLogRow> findByTaskId(String tenantId, String taskId, String vin, Pageable pageable) {
+        StringBuilder where = new StringBuilder("WHERE tenant_id = ? AND task_id = ?");
+        List<Object> params = new ArrayList<>();
+        params.add(tenantId);
+        params.add(taskId);
+        if (vin != null && !vin.isBlank()) {
+            where.append(" AND vin = ?");
+            params.add(vin);
+        }
+
+        // 先查 total,避免分页越界后仍执行 OFFSET 巨大值
+        Long total = jdbc.queryForObject(
+                "SELECT COUNT(*) FROM task_execution_log " + where,
+                Long.class,
+                params.toArray());
+        long totalElements = total == null ? 0L : total;
+
+        if (totalElements == 0 || pageable.getOffset() >= totalElements) {
+            return new PageImpl<>(List.of(), pageable, totalElements);
+        }
+
+        String sql = """
+                SELECT execution_seq, vin, trigger_time, overall_status, execution_duration,
+                       begin_reported_at, end_reported_at, miss_compensation, result_payload
+                FROM task_execution_log
+                """
+                + where
+                + " ORDER BY execution_seq DESC, trigger_time DESC LIMIT ? OFFSET ?";
+
+        List<Object> queryParams = new ArrayList<>(params);
+        queryParams.add(pageable.getPageSize());
+        queryParams.add(pageable.getOffset());
+
+        List<ExecutionLogRow> content = jdbc.query(sql, (rs, rowNum) -> new ExecutionLogRow(
+                rs.getInt("execution_seq"),
+                rs.getString("vin"),
+                rs.getTimestamp("trigger_time"),
+                (Integer) rs.getObject("overall_status"),
+                (Integer) rs.getObject("execution_duration"),
+                rs.getTimestamp("begin_reported_at"),
+                rs.getTimestamp("end_reported_at"),
+                rs.getString("miss_compensation"),
+                rs.getString("result_payload")
+        ), queryParams.toArray());
+
+        return new PageImpl<>(content, pageable, totalElements);
+    }
+
+    /**
      * 查询超时未结束的 execution_begin 记录。
      *
      * <p>条件: {@code end_reported_at IS NULL} 且 {@code begin_reported_at + maxExecutionMs * 3 < now()}。
@@ -139,5 +199,25 @@ public class TaskExecutionLogRepository {
             int executionSeq,
             LocalDateTime beginReportedAt,
             String tenantId) {
+    }
+
+    /**
+     * 分页查询行记录(REST §6.5)。
+     *
+     * <p>时间字段保留 {@link Timestamp} 形式,由 service 层负责转 epoch ms,
+     * 与 {@code TaskController} 现有 {@code validFrom} 转换风格保持一致。
+     * JSONB 字段 {@code missCompensation/resultPayload} 以原始 JSON 字符串透传,
+     * controller 层反序列化成 {@code Object} 输出。
+     */
+    public record ExecutionLogRow(
+            int executionSeq,
+            String vin,
+            Timestamp triggerTime,
+            Integer overallStatus,
+            Integer executionDuration,
+            Timestamp beginReportedAt,
+            Timestamp endReportedAt,
+            String missCompensationJson,
+            String resultPayloadJson) {
     }
 }
