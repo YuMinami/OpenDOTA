@@ -71,3 +71,36 @@
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Phase 4 Step 4.7: DynamicTargetScopeWorker
+
+**Date**: 2026-04-30
+**Task**: Phase 4 Step 4.7: DynamicTargetScopeWorker
+**Branch**: `main`
+
+### Summary
+
+实现 DynamicTargetScopeWorker 定时扫描器,每小时自动将新匹配 VIN 纳入 active 的 dynamic 模式周期/条件任务。新增 TargetScopeResolver(从 TaskService 提取)、ScopeMetrics(Prometheus 指标),更新 TaskTarget 实体补齐 V7 字段,重构 TaskService 使用 resolver。全部 116 测试通过。
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `2c25d10` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
