@@ -37,4 +37,10 @@ public interface TaskDispatchRecordRepository extends JpaRepository<TaskDispatch
     @Query("SELECT d FROM TaskDispatchRecord d WHERE d.taskId = :taskId " +
            "AND d.dispatchStatus NOT IN ('completed', 'canceled', 'expired')")
     List<TaskDispatchRecord> findActiveByTaskId(@Param("taskId") String taskId);
+
+    /**
+     * 查询指定任务下所有已存在的 VIN 集合(DynamicTargetScopeWorker 增量差集用)。
+     */
+    @Query("SELECT d.vin FROM TaskDispatchRecord d WHERE d.taskId = :taskId")
+    java.util.Set<String> findExistingVinsByTaskId(@Param("taskId") String taskId);
 }

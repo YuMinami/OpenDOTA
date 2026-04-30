@@ -14,8 +14,7 @@ import com.opendota.task.outbox.OutboxService;
 import com.opendota.task.repository.TaskDefinitionRepository;
 import com.opendota.task.repository.TaskDispatchRecordRepository;
 import com.opendota.task.repository.TaskTargetRepository;
-import jakarta.persistence.EntityManager;
-import jakarta.persistence.Query;
+import com.opendota.task.scope.TargetScopeResolver;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
@@ -29,7 +28,6 @@ import java.security.NoSuchAlgorithmException;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.UUID;
@@ -54,22 +52,22 @@ public class TaskService {
     private final TaskDefinitionRepository taskDefRepo;
     private final TaskTargetRepository taskTargetRepo;
     private final TaskDispatchRecordRepository dispatchRecordRepo;
-    private final EntityManager entityManager;
     private final ObjectMapper objectMapper;
     private final OutboxService outboxService;
+    private final TargetScopeResolver scopeResolver;
 
     public TaskService(TaskDefinitionRepository taskDefRepo,
                        TaskTargetRepository taskTargetRepo,
                        TaskDispatchRecordRepository dispatchRecordRepo,
-                       EntityManager entityManager,
                        ObjectMapper objectMapper,
-                       OutboxService outboxService) {
+                       OutboxService outboxService,
+                       TargetScopeResolver scopeResolver) {
         this.taskDefRepo = taskDefRepo;
         this.taskTargetRepo = taskTargetRepo;
         this.dispatchRecordRepo = dispatchRecordRepo;
-        this.entityManager = entityManager;
         this.objectMapper = objectMapper;
         this.outboxService = outboxService;
+        this.scopeResolver = scopeResolver;
     }
 
     /**
@@ -116,7 +114,8 @@ public class TaskService {
         String missPolicy = deriveMissPolicy(req.scheduleType(), req.missPolicy());
 
         // 9. 解析目标范围
-        List<String> targetVins = resolveTargetScope(req.targetScope(), tenantId);
+        List<String> targetVins = scopeResolver.resolve(
+                req.targetScope().type(), toJson(req.targetScope()), tenantId);
         if (targetVins.isEmpty()) {
             throw new BusinessException(ApiError.E41007, "targetScope 解析出的目标车辆数为 0");
         }
@@ -147,6 +146,9 @@ public class TaskService {
 
         // 保存 target
         TaskTarget target = new TaskTarget(req.targetScope().type(), toJson(req.targetScope()));
+        if (req.targetScope().mode() != null) {
+            target.setMode(req.targetScope().mode());
+        }
         def.addTarget(target);
 
         taskDefRepo.save(def);
@@ -404,56 +406,6 @@ public class TaskService {
             log.warn("提取 ecuScope 失败", e);
         }
         return null;
-    }
-
-    /**
-     * 解析 targetScope 为 VIN 列表。
-     */
-    @SuppressWarnings("unchecked")
-    private List<String> resolveTargetScope(TaskController.TargetScope scope, String tenantId) {
-        if (scope == null || scope.type() == null) {
-            return List.of();
-        }
-        return switch (scope.type()) {
-            case "vin_list" -> {
-                if (scope.value() instanceof List<?> list) {
-                    yield list.stream().map(Object::toString).toList();
-                }
-                // 尝试从 JSON 字符串解析
-                try {
-                    JsonNode node = objectMapper.valueToTree(scope.value());
-                    if (node.isArray()) {
-                        List<String> vins = new ArrayList<>();
-                        node.forEach(n -> vins.add(n.asText()));
-                        yield vins;
-                    }
-                } catch (Exception e) {
-                    log.warn("解析 vin_list 失败", e);
-                }
-                yield List.of();
-            }
-            case "all" -> {
-                // 查询该租户下所有车辆
-                Query q = entityManager.createNativeQuery(
-                        "SELECT vin FROM vehicle_online_status WHERE tenant_id = :tenantId");
-                q.setParameter("tenantId", tenantId);
-                yield q.getResultList();
-            }
-            case "model" -> {
-                // 当前无 vehicle-model 映射表，查询该租户全部车辆
-                // TODO: 有映射表后按车型过滤
-                Query q = entityManager.createNativeQuery(
-                        "SELECT vin FROM vehicle_online_status WHERE tenant_id = :tenantId");
-                q.setParameter("tenantId", tenantId);
-                yield q.getResultList();
-            }
-            case "tag" -> {
-                // TODO: 标签系统尚未实现
-                log.warn("tag 类型 targetScope 暂未实现");
-                yield List.of();
-            }
-            default -> List.of();
-        };
     }
 
     /**
