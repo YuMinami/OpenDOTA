@@ -161,3 +161,9 @@ reports/
 .claude/local/
 .claude/memory/
 CLAUDE.local.md
+
+
+.trellis/
+.codex/
+.claude/
+.agents/
