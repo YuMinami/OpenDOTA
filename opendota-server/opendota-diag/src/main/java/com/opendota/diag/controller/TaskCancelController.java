@@ -15,11 +15,14 @@ import org.springframework.web.bind.annotation.RestController;
 import java.util.Map;
 
 /**
- * 任务取消端点(REST §6 + 协议 §12.4)。v1.4 A2 不可中断规则由下游 {@link DiagDispatcher#dispatchTaskCancel}
+ * 车端任务取消端点(REST §6 + 协议 §12.4)。v1.4 A2 不可中断规则由下游 {@link DiagDispatcher#dispatchTaskCancel}
  * 集中执行,本控制器只做参数校验和 operator 注入。
  *
+ * <p>注意:此端点用于向车端发送 MQTT task_cancel 指令,与 {@code TaskController.DELETE /api/task/{taskId}}
+ * (取消任务定义,status→canceled)不同。
+ *
  * <pre>
- *   DELETE /api/task/{taskId}
+ *   DELETE /api/task/vehicle-cancel/{taskId}
  *   Body: { vin, channelId?, reason?, force? }
  * </pre>
  *
@@ -28,7 +31,7 @@ import java.util.Map;
  * {@code { "code":40305, "msg":"...", "data":null }}。
  */
 @RestController
-@RequestMapping("/api/task")
+@RequestMapping("/api/task/vehicle-cancel")
 public class TaskCancelController {
 
     private final DiagDispatcher dispatcher;

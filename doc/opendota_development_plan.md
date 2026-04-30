@@ -791,11 +791,14 @@ opendota-task/src/main/java/com/opendota/task/outbox/
 **产出**:
 ```
 opendota-task/src/main/java/com/opendota/task/dispatch/
-  ├─ DispatchCommand.java
-  ├─ DispatchCommandListener.java (@KafkaListener)
-  ├─ TaskDispatchScheduler.java (条件 jitter,见 v1.4 A1/B2)
-  ├─ DispatchSource.java (enum)
-  └─ DispatchRateLimiter.java (Redisson Token Bucket)
+  ├─ DispatchSource.java            -- 枚举,4 种分发来源
+  ├─ DispatchProperties.java        -- @ConfigurationProperties 配置
+  ├─ DispatchRateLimiter.java       -- Redisson 4 级令牌桶限流
+  ├─ TaskDispatchScheduler.java     -- 条件 jitter 调度器
+  ├─ DispatchCommandListener.java   -- @KafkaListener 消费者
+  ├─ DispatchMetrics.java           -- Micrometer 指标
+  └─ DispatchKafkaConfig.java       -- Kafka 消费者配置
+(opendota-task/src/main/java/com/opendota/task/outbox/DispatchCommand.java 复用已有)
 ```
 
 **参考**:架构 §4.4.1-§4.4.4
@@ -807,9 +810,9 @@ opendota-task/src/main/java/com/opendota/task/dispatch/
 - 在线车先下发 MQTT,离线车保持 `pending_online`
 
 **验收**:
-- [ ] 创建任务 → 在线车 2 秒内收到 MQTT `schedule_set`
-- [ ] 离线车 dispatch_status=pending_online
-- [ ] 模拟 Token Bucket 用尽,任务排队不失败
+- [x] 创建任务 → 在线车 2 秒内收到 MQTT `schedule_set`
+- [x] 离线车 dispatch_status=pending_online
+- [x] 模拟 Token Bucket 用尽,任务排队不失败
 
 ### Step 4.4: 车辆生命周期消费者
 

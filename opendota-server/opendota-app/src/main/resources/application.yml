@@ -20,6 +20,22 @@ spring:
     locations: classpath:db/migration
     validate-on-migrate: true
 
+  kafka:
+    # Kafka 集群地址,生产通过环境变量覆盖
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    producer:
+      # 架构 §3.3.1.1: 幂等 producer 防止网络抖动导致重复
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+    consumer:
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      auto-offset-reset: earliest
+
 server:
   port: 8080
 
@@ -71,3 +87,32 @@ opendota:
     keep-alive-seconds: 60
     connection-timeout-seconds: 10
     clean-session: false
+  outbox:
+    relay:
+      # Outbox Relay Worker 轮询间隔(ms),峰值可调至 100
+      fixed-delay: ${OPENDOTA_OUTBOX_RELAY_DELAY:200}
+    archive:
+      # 归档 cron 表达式,默认每天凌晨 3 点
+      cron: ${OPENDOTA_OUTBOX_ARCHIVE_CRON:0 0 3 * * ?}
+  kafka:
+    topic:
+      # 任务分发队列(架构 §4.4.1)
+      dispatch-queue: ${OPENDOTA_KAFKA_TOPIC_DISPATCH:task-dispatch-queue}
+      # 车辆生命周期事件(架构 §4.5)
+      vehicle-lifecycle: ${OPENDOTA_KAFKA_TOPIC_LIFECYCLE:vehicle-lifecycle}
+      # 死信队列
+      dlq: ${OPENDOTA_KAFKA_TOPIC_DLQ:task-dispatch-dlq}
+  dispatch:
+    # jitter 分桶数(架构 §4.4.4)
+    bucket-count: ${OPENDOTA_DISPATCH_BUCKET_COUNT:60}
+    # 最大 jitter 窗口(ms)
+    jitter-max-ms: ${OPENDOTA_DISPATCH_JITTER_MAX_MS:30000}
+    # 最大重试次数,超限进 DLQ
+    max-retries: ${OPENDOTA_DISPATCH_MAX_RETRIES:5}
+    rate-limit:
+      # 全局每秒配额(架构 §4.4.2)
+      global-per-second: ${OPENDOTA_RATE_GLOBAL:500}
+      # 租户每秒配额
+      tenant-per-second: ${OPENDOTA_RATE_TENANT:100}
+      # 单 VIN 每分钟配额
+      vin-per-minute: ${OPENDOTA_RATE_VIN:10}
