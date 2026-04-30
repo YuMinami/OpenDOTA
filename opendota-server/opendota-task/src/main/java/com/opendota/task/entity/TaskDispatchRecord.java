@@ -61,6 +61,15 @@ public class TaskDispatchRecord {
     @Column(name = "last_reported_at")
     private LocalDateTime lastReportedAt;
 
+    /**
+     * Phase 4 DoD: 首次进入 pending_online 状态的时间戳。
+     * <p>由 {@code DispatchCommandListener.markPendingOnline} 写入,
+     * 由 {@code PendingTaskReplayService.replayPendingTasks} 读取计算
+     * {@code offline_task_push_latency} 后清空。
+     */
+    @Column(name = "pending_online_at")
+    private LocalDateTime pendingOnlineAt;
+
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
 
@@ -117,6 +126,9 @@ public class TaskDispatchRecord {
 
     public LocalDateTime getLastReportedAt() { return lastReportedAt; }
     public void setLastReportedAt(LocalDateTime lastReportedAt) { this.lastReportedAt = lastReportedAt; }
+
+    public LocalDateTime getPendingOnlineAt() { return pendingOnlineAt; }
+    public void setPendingOnlineAt(LocalDateTime pendingOnlineAt) { this.pendingOnlineAt = pendingOnlineAt; }
 
     public LocalDateTime getCreatedAt() { return createdAt; }
 }

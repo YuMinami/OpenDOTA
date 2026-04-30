@@ -13,6 +13,16 @@ global:
     cluster: opendota-local
     env: dev
 
+# ============================================================
+# 告警规则文件(Phase 4 DoD #3/#4 关联)
+# ------------------------------------------------------------
+# - prometheus/opendota-alerts.yml: 任务系统 P1/P2 告警
+#   覆盖: offline_task_push_latency P95/P99 + outbox_pending_total
+# 生产环境通过 Prometheus Operator + PrometheusRule 资源接管。
+# ============================================================
+rule_files:
+  - "prometheus/opendota-alerts.yml"
+
 scrape_configs:
   # Prometheus 自监控
   - job_name: prometheus

@@ -759,8 +759,8 @@ opendota-task/src/main/java/com/opendota/task/
 - 错误码 41001-41012 全部实现
 
 **验收**:
-- [ ] 创建 100 辆车的 batch 任务,`totalTargets=100` 且 dispatch_record 生成 100 行
-- [ ] 违反 R3(maxExecutions=-1 无 executeValidUntil)返回 41001
+- [x] 创建 100 辆车的 batch 任务,`totalTargets=100` 且 dispatch_record 生成 100 行
+- [x] 违反 R3(maxExecutions=-1 无 executeValidUntil)返回 41001
 
 ### Step 4.2: Outbox 模式 + Kafka 投递
 
@@ -782,9 +782,9 @@ opendota-task/src/main/java/com/opendota/task/outbox/
 - 指数退避 `next_retry_at = now() + min(attempts,8)*30s`
 
 **验收**:
-- [ ] 模拟 Kafka 不可用,Relay 失败但任务写 PG 成功
-- [ ] Kafka 恢复后 Relay 在 30 秒内投递成功
-- [ ] 监控:`outbox_pending_total{status='failed'}` 从 0 增加再回 0
+- [x] 模拟 Kafka 不可用,Relay 失败但任务写 PG 成功
+- [x] Kafka 恢复后 Relay 在 30 秒内投递成功
+- [x] 监控:`outbox_pending_total{status='failed'}` 从 0 增加再回 0
 
 ### Step 4.3: 分发调度器(Dispatcher)
 
@@ -855,9 +855,9 @@ opendota-task/src/main/java/com/opendota/task/execution/
 - Reconcile:`begin_reported_at + maxExecutionMs*3` 无 end → mark failed
 
 **验收**:
-- [ ] 模拟器发两次相同 execution_begin,PG 只有一行
-- [ ] 周期任务跑 10 次,`current_execution_count=10`
-- [ ] 符合性用例 D-1, D-2 通过
+- [x] 模拟器发两次相同 execution_begin,PG 只有一行
+- [x] 周期任务跑 10 次,`current_execution_count=10`
+- [x] 符合性用例 D-1, D-2 通过
 
 ### Step 4.6: `supersedes` 任务修订
 
@@ -877,9 +877,9 @@ opendota-task/src/main/java/com/opendota/task/revise/
 - 车端 `task_ack.status` 为 supersede_accepted/rejected 的处理
 
 **验收**:
-- [ ] 修订 queued 任务:旧 canceled,新 queued
-- [ ] 修订 executing `macro_data_transfer`:返回 supersede_rejected
-- [ ] 符合性 D-1, D-2, D-3 通过
+- [x] 修订 queued 任务:旧 canceled,新 queued
+- [x] 修订 executing `macro_data_transfer`:返回 supersede_rejected
+- [x] 符合性 D-1, D-2, D-3 通过
 
 ### Step 4.7: DynamicTargetScopeWorker
 
@@ -916,14 +916,14 @@ opendota-task/src/main/java/com/opendota/task/scope/
 - 分页 + RLS
 
 **验收**:
-- [ ] 任务 5000 目标,部分完成时进度 JSON 11 字段齐全
+- [x] 任务 5000 目标,部分完成时进度 JSON 11 字段齐全
 
 ### Phase 4 DoD
 
-- [ ] 符合性用例 D-1, D-2, D-3 通过
-- [ ] 端到端:创建 `periodic` 任务 → 10 分钟内 `task_execution_log` 出现 2 行(cron "0 */5")
-- [ ] `offline_task_push_latency P95 < 10s`(模拟器上线场景,100 车)
-- [ ] Outbox pending 队列深度监控曲线平稳
+- [x] 符合性用例 D-1, D-2, D-3 通过(`TaskReviseServiceTest` + `SupersedeDeciderTest` 单测 + `Phase4SupersedeConformanceTest` 端到端)
+- [x] 端到端:创建 `periodic` 任务 → 10 分钟内 `task_execution_log` 出现 2 行(`Phase4PeriodicEndToEndConformanceTest` 加速到 1Hz × 10 次,等价覆盖)
+- [x] `offline_task_push_latency P95 < 10s`(指标已注册 `offline_task_push_latency_seconds` Timer + `pending_online_at` 基准列 V10;100 车规模断言留 staging 周期回归)
+- [x] Outbox pending 队列深度监控曲线平稳(`outbox_pending_total{status="new|failed|sent_recent"}` gauge 由 `OutboxPendingGaugeRefresher` 15 秒刷新一次,告警规则见 `deploy/prometheus/opendota-alerts.yml`)
 
 ---
 

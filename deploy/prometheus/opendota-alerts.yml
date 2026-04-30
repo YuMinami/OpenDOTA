@@ -1,0 +1,130 @@
+# ============================================================
+# OpenDOTA Phase 4 任务系统告警规则
+# ------------------------------------------------------------
+# 来源:doc/opendota_development_plan.md Phase 4 DoD 第 3、4 条
+#       架构 §3.3.1.1 Outbox 指标
+#       架构 §9.2 SLI 指标体系
+#
+# 加载方式(prometheus.yml):
+#   rule_files:
+#     - "opendota-alerts.yml"
+#
+# 告警分级:
+#   - P0:电话 + IM 立即响应(本文件不放,只放 P1/P2)
+#   - P1:IM + 邮件,2 小时内响应
+#   - P2:邮件日报
+# ============================================================
+
+groups:
+
+  # ----------------------------------------------------------
+  # 任务分发链路 — Phase 4 DoD #3
+  # ----------------------------------------------------------
+  - name: opendota.task.dispatch
+    interval: 30s
+    rules:
+      - alert: OfflineTaskPushLatencyP95High
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(offline_task_push_latency_seconds_bucket[5m]))
+          ) > 10
+        for: 5m
+        labels:
+          severity: P1
+          team: opendota-backend
+        annotations:
+          summary: "离线任务推送 P95 延迟超过 SLO"
+          description: |
+            offline_task_push_latency_seconds P95 = {{ $value }}s,SLO 阈值 10s。
+            可能原因:
+              - PendingTaskReplayService 因限流/Kafka 阻塞排队
+              - DispatchRateLimiter 桶被打满,在线车排队过长
+              - 车辆批量上线导致 replay 集中
+            排查路径:
+              - 看 dota_dispatch_rate_limited_total 增长
+              - 看 dota_lifecycle_replay_triggered_total / 时间窗
+              - 看 task_dispatch_record 中 pending_online_at IS NOT NULL 的记录数
+          plan-doc: "doc/opendota_development_plan.md Phase 4 DoD #3"
+
+      - alert: OfflineTaskPushLatencyP99Critical
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(offline_task_push_latency_seconds_bucket[5m]))
+          ) > 30
+        for: 2m
+        labels:
+          severity: P1
+          team: opendota-backend
+        annotations:
+          summary: "离线任务推送 P99 延迟严重"
+          description: "offline_task_push_latency_seconds P99 = {{ $value }}s,远超 30s 阈值。"
+
+  # ----------------------------------------------------------
+  # Outbox 队列深度 — Phase 4 DoD #4
+  # ----------------------------------------------------------
+  - name: opendota.task.outbox
+    interval: 30s
+    rules:
+      - alert: OutboxFailedDepthHigh
+        expr: outbox_pending_total{status="failed"} > 10000
+        for: 5m
+        labels:
+          severity: P1
+          team: opendota-backend
+        annotations:
+          summary: "Outbox 失败重试队列积压超阈值"
+          description: |
+            outbox_pending_total{status="failed"} = {{ $value }},超过 10k 阈值。
+            可能原因:Kafka 集群异常,或某个 topic 持续 reject。
+            排查:看 outbox_relay_failed_total 增长率 + last_error 字段。
+
+      - alert: OutboxNewDepthCreeping
+        expr: outbox_pending_total{status="new"} > 5000
+        for: 10m
+        labels:
+          severity: P2
+          team: opendota-backend
+        annotations:
+          summary: "Outbox 新事件积压增长"
+          description: |
+            outbox_pending_total{status="new"} = {{ $value }},10 分钟未消化超过 5k。
+            可能 Relay Worker 处理能力不足或抓取间隔过长。
+
+      - alert: OutboxRelayLatencyP99High
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le) (rate(outbox_relay_latency_seconds_bucket[5m]))
+          ) > 5
+        for: 5m
+        labels:
+          severity: P1
+          team: opendota-backend
+        annotations:
+          summary: "Outbox Relay 单批 drain 耗时 P99 异常"
+          description: "outbox_relay_latency_seconds P99 = {{ $value }}s"
+
+  # ----------------------------------------------------------
+  # 任务系统业务异常
+  # ----------------------------------------------------------
+  - name: opendota.task.business
+    interval: 60s
+    rules:
+      - alert: TaskDispatchRateLimitedSpike
+        expr: rate(dota_dispatch_rate_limited_total[5m]) > 100
+        for: 10m
+        labels:
+          severity: P2
+          team: opendota-backend
+        annotations:
+          summary: "分发限流持续触发"
+          description: "dota_dispatch_rate_limited_total 5m 速率 = {{ $value }}/s"
+
+      - alert: TaskDlqGrowing
+        expr: rate(dota_dispatch_dlq_total[10m]) > 0
+        for: 5m
+        labels:
+          severity: P1
+          team: opendota-backend
+        annotations:
+          summary: "分发死信队列在增长"
+          description: "dota_dispatch_dlq_total 在过去 10 分钟有增长,需要人工介入"

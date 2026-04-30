@@ -290,6 +290,11 @@ public class DispatchCommandListener {
         log.info("车辆离线,保持 pending_online taskId={} vin={}", cmd.taskId(), cmd.vin());
         dispatchRecordRepo.findByTaskIdAndVin(cmd.taskId(), cmd.vin()).ifPresent(record -> {
             record.setRetryCount(record.getRetryCount() + 1);
+            // Phase 4 DoD #3: 首次进入 pending_online 时记录基准时间戳,
+            // PendingTaskReplayService 回放成功时按 now() - pending_online_at 打点 offline_task_push_latency
+            if (record.getPendingOnlineAt() == null) {
+                record.setPendingOnlineAt(LocalDateTime.now());
+            }
             dispatchRecordRepo.save(record);
         });
     }
